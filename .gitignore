@@ -37,3 +37,9 @@
 *.pgm
 *.png
 local.env
+
+# agent notes and session files: never published
+/CLAUDE.md
+/notes/
+/.claude/
+/MIGRATE-SESSION.md
