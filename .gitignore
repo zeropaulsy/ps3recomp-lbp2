@@ -1,0 +1,39 @@
+# Whitelist: nothing is tracked unless listed below. Game data, keys, the ELF, the
+# lifted code and everything a run writes stay out of the repository.
+/*
+!/.gitignore
+!/.gitmodules
+!/README.md
+!/LICENSE
+!/env.sh
+!/run.sh
+!/run_frames.sh
+!/patch_stubs.py
+
+!/project/
+/project/*
+!/project/CMakeLists.txt
+!/project/main.cpp
+!/project/lbp2_local.cpp
+!/project/stubs.cpp
+
+!/gdb/
+/gdb/*
+!/gdb/*.py
+!/gdb/run_gdb.sh
+
+!/tools/
+/tools/*
+!/tools/*.py
+
+# never, even if listed above by mistake
+*.elf
+*.self
+*.sprx
+*.sdat
+*.dec
+*.iso
+*.ppm
+*.pgm
+*.png
+local.env
