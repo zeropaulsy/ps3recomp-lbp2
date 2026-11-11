@@ -32,7 +32,7 @@ decrypt and lift it yourself.
 
 ## Building
 
-1. **Get the runtime.** Clone the fork's branch next to this repository:
+1. **Get the runtime.** Clone the fork's branch into this checkout (it is ignored by git):
    ```
    git clone -b lbp2-fixes https://github.com/zeropaulsy/ps3recomp.git ps3recomp
    ```
@@ -61,12 +61,12 @@ decrypt and lift it yourself.
 6. **Configure and build** (the lifted files are large: keep the job count low, about 1.5 GB
    of RAM per job):
    ```
-   cmake -S project -B build -G Ninja -DPS3RECOMP_DIR=$PWD/ps3recomp \
-         -DRECOMP_DIR=$PWD/recompiled -DSPU_DIR=$PWD/spu
+   cmake -S project -B build -G Ninja
    ninja -C build -j3
    ```
    Add `-DPS3RECOMP_RSX_VULKAN=ON` (in a second build directory, e.g. `build-vk`) for real
    pixels; it needs glslang. The default build uses the headless null renderer.
+   `-DPS3RECOMP_DIR=`, `-DRECOMP_DIR=` and `-DSPU_DIR=` point elsewhere if your layout differs.
 
 ## Running
 

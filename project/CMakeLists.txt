@@ -30,13 +30,14 @@ endif()
 #         -DPS3RECOMP_DIR=/path/to/ps3recomp \
 #         -DRECOMP_DIR=/path/to/my_game/recompiled
 #
+# Defaults follow this repository's layout: ps3recomp/ (the lbp2-fixes branch of
+# the fork), recompiled/ and spu/ all sit next to project/.
 if(NOT DEFINED PS3RECOMP_DIR)
-    # Default: this project is still sitting inside ps3recomp/templates/project/
-    get_filename_component(PS3RECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../" ABSOLUTE)
+    get_filename_component(PS3RECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../ps3recomp" ABSOLUTE)
 endif()
 get_filename_component(PS3RECOMP_DIR "${PS3RECOMP_DIR}" ABSOLUTE)
 
-set(RECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/recompiled" CACHE PATH
+set(RECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../recompiled" CACHE PATH
     "Directory holding the lifter's output: ppu_recomp.h and the lifted sources")
 get_filename_component(RECOMP_DIR "${RECOMP_DIR}" ABSOLUTE)
 
@@ -134,7 +135,7 @@ set(PS3RECOMP_SCAFFOLD
 # match, which is worse than shipping none. Both the table and the job-module
 # registry self-register from constructors and are therefore optional -- a tree
 # that has not lifted its SPU images yet configures and links without them.
-set(SPU_DIR "${CMAKE_CURRENT_SOURCE_DIR}/spu" CACHE PATH
+set(SPU_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../spu" CACHE PATH
     "Directory holding the lifted SPU images (<SPU_DIR>/<image>/spu_recomp.c)")
 option(PORT_ENABLE_SPU "Compile and register the title's lifted SPU images" ON)
 
