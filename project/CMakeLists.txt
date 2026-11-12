@@ -196,7 +196,31 @@ if(SPU_SOURCES)
         INCLUDE_DIRECTORIES "${PS3RECOMP_DIR}/runtime/spu"
         COMPILE_DEFINITIONS SPU_USE_DISPATCH_MT)
     if(NOT MSVC OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        set_source_files_properties(${SPU_SOURCES} PROPERTIES COMPILE_OPTIONS "-O2")
+        set(_spu_opts "-O2")
+        # LBP2_SPU_AVX2=ON: the lifted SPU sources also get -mavx2. That selects
+        # the runtime's AVX2 form of the exact SPU float ops (four lanes as one
+        # f64x4 instead of two SSE halves) and VEX three-operand code (~13%
+        # faster Wws jobs in LBP2's levels). -ffp-contract=off still applies, so
+        # nothing is contracted into fma. Default: ON when the compiler takes
+        # -mavx2 and the machine configuring the build has AVX2. The binary then
+        # needs AVX2 too: pass -DLBP2_SPU_AVX2=OFF for one that runs anywhere.
+        if(NOT DEFINED LBP2_SPU_AVX2)
+            include(CheckCSourceRuns)
+            set(CMAKE_REQUIRED_FLAGS "-mavx2")
+            check_c_source_runs("
+                #include <immintrin.h>
+                int main(void) {
+                    if (!__builtin_cpu_supports(\"avx2\")) return 1;
+                    __m256d d = _mm256_set1_pd(1.0);
+                    return _mm256_movemask_pd(_mm256_add_pd(d, d)) != 0;
+                }" LBP2_HOST_HAS_AVX2)
+            unset(CMAKE_REQUIRED_FLAGS)
+        endif()
+        option(LBP2_SPU_AVX2 "Compile the lifted SPU sources with -mavx2" ${LBP2_HOST_HAS_AVX2})
+        if(LBP2_SPU_AVX2)
+            list(APPEND _spu_opts "-mavx2")
+        endif()
+        set_source_files_properties(${SPU_SOURCES} PROPERTIES COMPILE_OPTIONS "${_spu_opts}")
     endif()
 endif()
 
