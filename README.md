@@ -97,6 +97,7 @@ Progress shows in the log as `[lbp2-local] t=Ns flips=N` and `init at: step N`.
 | `GCM_SEMA_ACQUIRE=1`, `GCM_SEMA_ACQUIRE_MS=2000` | The RSX waits for labels the SPU jobs write; without it frames show 128x128 blocks of older frames |
 | `CELL_FIBER_RUN_RETURNS=1` | `cellFiberPpuRunFibers` returns when nothing is runnable; the game signals its fibers after it returns |
 | `PS3RECOMP_VK_GUEST_PROGRAMS=1` | Vulkan build: use the game's shaders |
+| `SPU_MFC_LOOKUP_CACHE=1` | Per-thread cache of the SPU MFC engine lookup; about 19% faster in levels |
 
 Useful extras: `LBP2_NO_RASTER=1` (headless build without the software rasterizer, much
 faster), `GCM_SEMA_STATS=1`, `VK_BLACK_STATS=1`, `RSX_PRESENT_LOG=1`, `LBP2_CRASH_BT=1`.
