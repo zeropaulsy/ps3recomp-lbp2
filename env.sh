@@ -25,7 +25,8 @@ if [ -z "$LBP2_NO_DEFAULT_ENV" ]; then
   : "${CELL_FIBER_RUN_RETURNS=1}"      # cellFiberPpuRunFibers returns when nothing is runnable
   : "${PS3RECOMP_VK_GUEST_PROGRAMS=1}" # Vulkan build: run the game's own shaders
   : "${SPU_MFC_LOOKUP_CACHE=1}"        # per-thread MFC engine cache: ~19% faster in levels
+  : "${VK_DRAW_BATCH=1}"               # Vulkan build: one submission per batch of draws, ~+55% fps
   export PAD_SCRIPT SPU_INTERP_UNLIFTED SPU_DMA_REPEAT_EXEMPT SPU_WWS_PM_IMAGE GCM_USER_QUEUE \
          GCM_FIFO_SEGMENT GCM_SEMA_ACQUIRE GCM_SEMA_ACQUIRE_MS CELL_FIBER_RUN_RETURNS \
-         PS3RECOMP_VK_GUEST_PROGRAMS SPU_MFC_LOOKUP_CACHE
+         PS3RECOMP_VK_GUEST_PROGRAMS SPU_MFC_LOOKUP_CACHE VK_DRAW_BATCH
 fi

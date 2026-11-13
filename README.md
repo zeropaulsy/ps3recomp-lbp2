@@ -101,9 +101,12 @@ Progress shows in the log as `[lbp2-local] t=Ns flips=N` and `init at: step N`.
 | `CELL_FIBER_RUN_RETURNS=1` | `cellFiberPpuRunFibers` returns when nothing is runnable; the game signals its fibers after it returns |
 | `PS3RECOMP_VK_GUEST_PROGRAMS=1` | Vulkan build: use the game's shaders |
 | `SPU_MFC_LOOKUP_CACHE=1` | Per-thread cache of the SPU MFC engine lookup; about 19% faster in levels |
+| `VK_DRAW_BATCH=1` | Vulkan build: records draws, uploads and clears into one GPU submission instead of waiting for the GPU after each draw; about 7.9 -> 12.3 fps in levels |
 
 Useful extras: `LBP2_NO_RASTER=1` (headless build without the software rasterizer, much
 faster), `GCM_SEMA_STATS=1`, `VK_BLACK_STATS=1`, `RSX_PRESENT_LOG=1`, `LBP2_CRASH_BT=1`.
+`LBP2_RSX_POLL_US=<50..4000>` (default 4000) sets how long the RSX thread sleeps between FIFO
+passes; 250 gave a few percent more fps in levels.
 
 ## Credits
 
