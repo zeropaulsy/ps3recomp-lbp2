@@ -67,8 +67,9 @@ decrypt and lift it yourself.
    Add `-DPS3RECOMP_RSX_VULKAN=ON` (in a second build directory, e.g. `build-vk`) for real
    pixels; it needs glslang. The default build uses the headless null renderer.
    `-DPS3RECOMP_DIR=`, `-DRECOMP_DIR=` and `-DSPU_DIR=` point elsewhere if your layout differs.
-   The lifted SPU code is built with `-mavx2` when the configuring machine has AVX2 (faster
-   SPU float ops); the binary then needs AVX2. `-DLBP2_SPU_AVX2=OFF` builds one without it.
+   The lifted SPU code is built with `-mavx2` (and `-mfma` if present) when the configuring
+   machine has AVX2 (faster SPU float ops); the binary then needs the same CPU features.
+   `-DLBP2_SPU_AVX2=OFF` builds one without them, `-DLBP2_SPU_FMA=OFF` drops only `-mfma`.
 
 ## Running
 

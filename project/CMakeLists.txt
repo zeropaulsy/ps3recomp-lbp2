@@ -197,13 +197,15 @@ if(SPU_SOURCES)
         COMPILE_DEFINITIONS SPU_USE_DISPATCH_MT)
     if(NOT MSVC OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         set(_spu_opts "-O2")
-        # LBP2_SPU_AVX2=ON: the lifted SPU sources also get -mavx2. That selects
-        # the runtime's AVX2 form of the exact SPU float ops (four lanes as one
-        # f64x4 instead of two SSE halves) and VEX three-operand code (~13%
-        # faster Wws jobs in LBP2's levels). -ffp-contract=off still applies, so
-        # nothing is contracted into fma. Default: ON when the compiler takes
-        # -mavx2 and the machine configuring the build has AVX2. The binary then
-        # needs AVX2 too: pass -DLBP2_SPU_AVX2=OFF for one that runs anywhere.
+        # LBP2_SPU_AVX2=ON: the lifted SPU sources also get -mavx2, and -mfma when
+        # the host has FMA3 too. That selects the runtime's AVX2 form of the exact
+        # SPU float ops (four lanes as one f64x4 instead of two SSE halves), VEX
+        # three-operand code (~13% faster Wws jobs in LBP2's levels) and, under
+        # SPU_FLOAT_RZ=1, a single fused op for fma/fms/fnms. -ffp-contract=off
+        # still applies, so the compiler contracts nothing into fma by itself.
+        # Default: ON when the compiler takes -mavx2 and the machine configuring
+        # the build has AVX2. The binary then needs what it was built for: pass
+        # -DLBP2_SPU_AVX2=OFF for one that runs anywhere.
         if(NOT DEFINED LBP2_SPU_AVX2)
             include(CheckCSourceRuns)
             set(CMAKE_REQUIRED_FLAGS "-mavx2")
@@ -214,11 +216,23 @@ if(SPU_SOURCES)
                     __m256d d = _mm256_set1_pd(1.0);
                     return _mm256_movemask_pd(_mm256_add_pd(d, d)) != 0;
                 }" LBP2_HOST_HAS_AVX2)
+            set(CMAKE_REQUIRED_FLAGS "-mavx2 -mfma")
+            check_c_source_runs("
+                #include <immintrin.h>
+                int main(void) {
+                    if (!__builtin_cpu_supports(\"fma\")) return 1;
+                    __m128 f = _mm_set1_ps(1.0f);
+                    return _mm_movemask_ps(_mm_fmadd_ps(f, f, f)) != 0;
+                }" LBP2_HOST_HAS_FMA)
             unset(CMAKE_REQUIRED_FLAGS)
         endif()
-        option(LBP2_SPU_AVX2 "Compile the lifted SPU sources with -mavx2" ${LBP2_HOST_HAS_AVX2})
+        option(LBP2_SPU_AVX2 "Compile the lifted SPU sources with -mavx2 (and -mfma)" ${LBP2_HOST_HAS_AVX2})
+        option(LBP2_SPU_FMA "With LBP2_SPU_AVX2, also -mfma" ${LBP2_HOST_HAS_FMA})
         if(LBP2_SPU_AVX2)
             list(APPEND _spu_opts "-mavx2")
+            if(LBP2_SPU_FMA)
+                list(APPEND _spu_opts "-mfma")
+            endif()
         endif()
         set_source_files_properties(${SPU_SOURCES} PROPERTIES COMPILE_OPTIONS "${_spu_opts}")
     endif()
