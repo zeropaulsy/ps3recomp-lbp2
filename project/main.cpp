@@ -209,8 +209,25 @@ static DWORD WINAPI frame_clock(LPVOID)
     unsigned  last_flip = 0;
     ULONGLONG next_tick = GetTickCount64();
 
+    /* LBP2_RSX_POLL_US: how long this thread sleeps between FIFO passes
+     * (default 4000). A pass that finds the FIFO empty, or parks on a
+     * semaphore acquire an SPU has not released yet, returns at once, and the
+     * RSX then sits idle until the next pass. LBP2 parks several times a frame
+     * (the post-effect and MLAA labels) and waits on put while the SPU jobs
+     * build its command lists, so the full sleep is paid on each. The window
+     * pump keeps its ~4 ms cadence whatever the poll. */
+    unsigned poll_us = 4000;
+    { const char* e = getenv("LBP2_RSX_POLL_US");
+      if (e && *e) { long v = strtol(e, NULL, 10); if (v >= 50 && v <= 4000) poll_us = (unsigned)v; } }
+    ULONGLONG last_pump = 0;
+
     for (;;) {
-        Sleep(4);
+#ifdef _WIN32
+        Sleep((poll_us + 999) / 1000);
+#else
+        if (poll_us >= 1000 && poll_us % 1000 == 0) Sleep(poll_us / 1000);
+        else { struct timespec d = { 0, (long)poll_us * 1000L }; nanosleep(&d, NULL); }
+#endif
         ULONGLONG now = GetTickCount64();
 
         int fired = 0;
@@ -246,7 +263,9 @@ static DWORD WINAPI frame_clock(LPVOID)
             }
             cellGcm_rsx_process_fifo();
 
-            if (rsx_backend_pump() != 0) {
+            const int pump_due = poll_us >= 4000 || now - last_pump >= 4;
+            if (pump_due) last_pump = now;
+            if (pump_due && rsx_backend_pump() != 0) {
                 rsx_ok = 0;              /* window closed */
                 /* ...so quit, as the console's Quit Game does, instead of
                  * leaving the game running with no window. */
@@ -260,7 +279,7 @@ static DWORD WINAPI frame_clock(LPVOID)
             if (fc != last_flip) {
                 present_guest_frame();
                 last_flip = fc;
-            } else if (fc == 0) {
+            } else if (fc == 0 && pump_due) {
                 rsx_backend_present();
             }
         }
