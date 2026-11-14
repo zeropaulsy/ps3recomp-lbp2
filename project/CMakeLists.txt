@@ -183,13 +183,39 @@ add_executable(${PROJECT_NAME}
     ${SPU_SOURCES}
 )
 
+# lbp2_check_host_simd(): sets LBP2_HOST_HAS_AVX2 / LBP2_HOST_HAS_FMA (cached) when the compiler
+# takes -mavx2 / -mfma and the machine configuring the build runs them. The defaults of
+# LBP2_SPU_AVX2 / LBP2_PPU_AVX2 (and their FMA options) come from it.
+macro(lbp2_check_host_simd)
+    if(NOT MSVC OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        include(CheckCSourceRuns)
+        set(CMAKE_REQUIRED_FLAGS "-mavx2")
+        check_c_source_runs("
+            #include <immintrin.h>
+            int main(void) {
+                if (!__builtin_cpu_supports(\"avx2\")) return 1;
+                __m256d d = _mm256_set1_pd(1.0);
+                return _mm256_movemask_pd(_mm256_add_pd(d, d)) != 0;
+            }" LBP2_HOST_HAS_AVX2)
+        set(CMAKE_REQUIRED_FLAGS "-mavx2 -mfma")
+        check_c_source_runs("
+            #include <immintrin.h>
+            int main(void) {
+                if (!__builtin_cpu_supports(\"fma\")) return 1;
+                __m128 f = _mm_set1_ps(1.0f);
+                return _mm_movemask_ps(_mm_fmadd_ps(f, f, f)) != 0;
+            }" LBP2_HOST_HAS_FMA)
+        unset(CMAKE_REQUIRED_FLAGS)
+    endif()
+endmacro()
+
 # The lifted SPU sources use bare #include "spu_context.h". Scope that include
 # directory (and their flags) to those TUs alone: adding it to the whole target
 # changes the compile command of every lifted PPU TU, and those are large enough
 # that the needless rebuild is measured in tens of minutes.
 #   SPU_USE_DISPATCH_MT -- route SPU_IB_DISPATCH through the musttail path.
-#   -O2                 -- the target-wide -O1 exists for the huge PPU TUs; the
-#                          SPU sources are small and decode-hot, so they get
+#   -O2                 -- the target-wide level is -O2 too nowadays (see below); kept
+#                          explicit because the SPU sources are small and decode-hot, so they get
 #                          full optimization. The last -O on the line wins.
 if(SPU_SOURCES)
     set_source_files_properties(${SPU_SOURCES} PROPERTIES
@@ -207,24 +233,7 @@ if(SPU_SOURCES)
         # the build has AVX2. The binary then needs what it was built for: pass
         # -DLBP2_SPU_AVX2=OFF for one that runs anywhere.
         if(NOT DEFINED LBP2_SPU_AVX2)
-            include(CheckCSourceRuns)
-            set(CMAKE_REQUIRED_FLAGS "-mavx2")
-            check_c_source_runs("
-                #include <immintrin.h>
-                int main(void) {
-                    if (!__builtin_cpu_supports(\"avx2\")) return 1;
-                    __m256d d = _mm256_set1_pd(1.0);
-                    return _mm256_movemask_pd(_mm256_add_pd(d, d)) != 0;
-                }" LBP2_HOST_HAS_AVX2)
-            set(CMAKE_REQUIRED_FLAGS "-mavx2 -mfma")
-            check_c_source_runs("
-                #include <immintrin.h>
-                int main(void) {
-                    if (!__builtin_cpu_supports(\"fma\")) return 1;
-                    __m128 f = _mm_set1_ps(1.0f);
-                    return _mm_movemask_ps(_mm_fmadd_ps(f, f, f)) != 0;
-                }" LBP2_HOST_HAS_FMA)
-            unset(CMAKE_REQUIRED_FLAGS)
+            lbp2_check_host_simd()
         endif()
         option(LBP2_SPU_AVX2 "Compile the lifted SPU sources with -mavx2 (and -mfma)" ${LBP2_HOST_HAS_AVX2})
         option(LBP2_SPU_FMA "With LBP2_SPU_AVX2, also -mfma" ${LBP2_HOST_HAS_FMA})
@@ -307,14 +316,16 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
         # The lift spells PPC arithmetic as signed C arithmetic, which must wrap;
         # without this, clang exploits overflow UB (e.g. folds "x*x < 0" to false).
         -fwrapv
-        # The target-wide -O1 the SPU note above relies on, for a build whose
-        # configuration sets no optimisation level (no CMAKE_BUILD_TYPE, or one
-        # CMake has no defaults for). Without it every lifted PPU TU compiled at
-        # -O0: each static inline helper (ppc_rlw64, vmx_w, vm_read32_inl) is a
-        # real call that spills to the stack, and those calls were most of the
-        # PPU thread's profile. -O1 keeps the huge TUs' build time sane. Debug
-        # and the optimised configurations keep their own levels.
-        $<$<NOT:$<CONFIG:Debug,Release,RelWithDebInfo,MinSizeRel>>:-O1>
+        # The target-wide level for a build whose configuration sets none (no
+        # CMAKE_BUILD_TYPE, or one CMake has no defaults for). Without it every
+        # lifted PPU TU compiled at -O0: each static inline helper (ppc_rlw64,
+        # vmx_w, vm_read32_inl) is a real call that spills to the stack. It was
+        # -O1 to keep the huge TUs' build time down, but at -O1 GCC still leaves
+        # vmx_vmaddfp / vm_read32_mm as calls inside the big lifted functions
+        # (~25% of the main PPU thread's own work in LBP2). -O2: +2% fps in the
+        # level, full PPU rebuild ~20 min at -j4 (~1.5 GB per compiler). Debug and
+        # the optimised configurations keep their own levels.
+        $<$<NOT:$<CONFIG:Debug,Release,RelWithDebInfo,MinSizeRel>>:-O2>
     )
 elseif(MSVC)
     target_compile_options(${PROJECT_NAME} PRIVATE
@@ -345,8 +356,33 @@ if(MSVC)
     set_source_files_properties(${RECOMP_SOURCES} PROPERTIES
         COMPILE_OPTIONS "/w;/bigobj")
 else()
+    set(_ppu_opts "-w;-ffp-contract=off")
+    # LBP2_PPU_AVX2=ON: the lifted PPU sources also get -mavx2, and -mfma with LBP2_PPU_FMA.
+    # vmx_fmaf (vmaddfp / vnmsubfp) becomes one instruction per lane instead of a double
+    # emulation, and the scalar fmadd family's fma() an inline vfmadd instead of a libm
+    # call. Results are the same: fmaf/fma are exact either way and -ffp-contract=off still
+    # applies. +1.3% fps over -O2 alone in LBP2's level. Default: what the configuring host
+    # has (as LBP2_SPU_AVX2); -DLBP2_PPU_AVX2=OFF for a binary that runs anywhere.
+    if(NOT DEFINED LBP2_PPU_AVX2)
+        lbp2_check_host_simd()
+    endif()
+    option(LBP2_PPU_AVX2 "Compile the lifted PPU sources with -mavx2 (and -mfma)" ${LBP2_HOST_HAS_AVX2})
+    option(LBP2_PPU_FMA "With LBP2_PPU_AVX2, also -mfma" ${LBP2_HOST_HAS_FMA})
+    if(LBP2_PPU_AVX2)
+        list(APPEND _ppu_opts "-mavx2")
+        if(LBP2_PPU_FMA)
+            list(APPEND _ppu_opts "-mfma")
+        endif()
+    endif()
+    # LBP2_PPU_EXTRA_FLAGS="...": more flags for the lifted PPU sources only (experiments).
+    # Empty by default.
+    set(LBP2_PPU_EXTRA_FLAGS "" CACHE STRING "Extra compile flags for the lifted PPU sources")
+    if(LBP2_PPU_EXTRA_FLAGS)
+        separate_arguments(_ppu_extra UNIX_COMMAND "${LBP2_PPU_EXTRA_FLAGS}")
+        list(APPEND _ppu_opts ${_ppu_extra})
+    endif()
     set_source_files_properties(${RECOMP_SOURCES} PROPERTIES
-        COMPILE_OPTIONS "-w;-ffp-contract=off")
+        COMPILE_OPTIONS "${_ppu_opts}")
 endif()
 
 # ---------------------------------------------------------------------------
