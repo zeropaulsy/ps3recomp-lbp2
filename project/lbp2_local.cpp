@@ -312,6 +312,14 @@ extern "C" void __wrap_ppu_sysprx_register(void) {
 }
 
 __attribute__((constructor)) static void start_progress() {
+#ifdef LBP2_SPU_LS_NO_DIAG
+    /* The lifted SPU code is built with SPU_LS_NO_DIAG (CMake LBP2_SPU_LS_DIAG=OFF). */
+    static const char* const vars[] = {"SPU_LS_WATCH", "SPU_LS_LOWREAD", "SPU_SMC_WATCH", "SPU_WWS_PROBE"};
+    for (const char* v : vars)
+        if (getenv(v))
+            fprintf(stderr, "[lbp2-local] %s is set, but the lifted SPU code has no LS diagnostics "
+                    "gate: rebuild with -DLBP2_SPU_LS_DIAG=ON to see its lqd/stqd\n", v);
+#endif
     pthread_t th;
     if (pthread_create(&th, nullptr, progress, nullptr) == 0) pthread_detach(th);
 }

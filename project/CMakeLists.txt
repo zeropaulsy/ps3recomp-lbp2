@@ -237,6 +237,14 @@ if(SPU_SOURCES)
         # The MFC parameter-channel writes (5-6 per DMA) become plain stores instead of calls
         # into spu_wrch (runtime/spu/spu_context.h, SPU_WRCH_INLINE).
         list(APPEND _spu_opts "-DSPU_WRCH_INLINE")
+        # Every lqd/stqd tests a diagnostics gate (SPU_LS_WATCH, SPU_LS_LOWREAD, SPU_SMC_WATCH,
+        # SPU_WWS_PROBE). Title builds compile it out (SPU_LS_NO_DIAG); -DLBP2_SPU_LS_DIAG=ON
+        # puts it back for debugging. lbp2_local.cpp warns if those variables are set without it.
+        option(LBP2_SPU_LS_DIAG "Keep the LS-access diagnostics gate in the lifted SPU code" OFF)
+        if(NOT LBP2_SPU_LS_DIAG)
+            list(APPEND _spu_opts "-DSPU_LS_NO_DIAG")
+            set_source_files_properties(lbp2_local.cpp PROPERTIES COMPILE_DEFINITIONS LBP2_SPU_LS_NO_DIAG)
+        endif()
         # LBP2_SPU_EXTRA_FLAGS="...": more flags for the lifted SPU sources only (experiments:
         # -march=native, -O3, PGO). Empty by default.
         set(LBP2_SPU_EXTRA_FLAGS "" CACHE STRING "Extra compile flags for the lifted SPU sources")
