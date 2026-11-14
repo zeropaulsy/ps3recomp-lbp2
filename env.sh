@@ -15,6 +15,7 @@ export LBP2_WORKSPACE="$W" LBP2_ELF
 # What each does: README.md, "Runtime settings".
 if [ -z "$LBP2_NO_DEFAULT_ENV" ]; then
   : "${PAD_SCRIPT=25:0x4000,30:0x4000,35:0x4000}"  # Cross at 25/30/35 s: the boot prompts
+  : "${LBP2_SKIP_INTRO=1}"            # START until the level starts: skips the intro movie (lbp2_local.cpp #10)
   : "${SPU_INTERP_UNLIFTED=1}"         # interpret runtime-loaded SPU code (FMOD DSP plugins)
   : "${SPU_DMA_REPEAT_EXEMPT=8}"       # never let the repeat watchdog halt SPU image 8
   : "${SPU_WWS_PM_IMAGE=1}"            # the Wws_Job policy module is SPU image 1 in LBP2
@@ -26,7 +27,10 @@ if [ -z "$LBP2_NO_DEFAULT_ENV" ]; then
   : "${PS3RECOMP_VK_GUEST_PROGRAMS=1}" # Vulkan build: run the game's own shaders
   : "${SPU_MFC_LOOKUP_CACHE=1}"        # per-thread MFC engine cache: ~19% faster in levels
   : "${VK_DRAW_BATCH=1}"               # Vulkan build: one submission per batch of draws, ~+55% fps
-  export PAD_SCRIPT SPU_INTERP_UNLIFTED SPU_DMA_REPEAT_EXEMPT SPU_WWS_PM_IMAGE GCM_USER_QUEUE \
+  : "${LBP2_FIFO_SPIN_MAX=4}"          # cap the game's 500 ms RSX-backlog spin (lbp2_local.cpp #11)
+  : "${SPU_FLOAT_RZ=1}"                # SPU float ops run natively in round-toward-zero mode (bit-exact)
+  export PAD_SCRIPT LBP2_SKIP_INTRO SPU_INTERP_UNLIFTED SPU_DMA_REPEAT_EXEMPT SPU_WWS_PM_IMAGE GCM_USER_QUEUE \
          GCM_FIFO_SEGMENT GCM_SEMA_ACQUIRE GCM_SEMA_ACQUIRE_MS CELL_FIBER_RUN_RETURNS \
-         PS3RECOMP_VK_GUEST_PROGRAMS SPU_MFC_LOOKUP_CACHE VK_DRAW_BATCH
+         PS3RECOMP_VK_GUEST_PROGRAMS SPU_MFC_LOOKUP_CACHE VK_DRAW_BATCH LBP2_FIFO_SPIN_MAX \
+         SPU_FLOAT_RZ
 fi

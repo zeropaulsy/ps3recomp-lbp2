@@ -92,6 +92,10 @@ Progress shows in the log as `[lbp2-local] t=Ns flips=N` and `init at: step N`.
 | Variable | Why |
 |----------|-----|
 | `PAD_SCRIPT=25:0x4000,30:0x4000,35:0x4000` | Presses Cross for the game's two boot prompts |
+| `LBP2_SKIP_INTRO=1` | Pulses START from 38 s until the level starts, which skips the intro movie (never pauses the level) |
+| `LBP2_NO_MLAA=1` | Opt-in: skips the Edge MLAA SPU pass (~+12-19% fps; no anti-aliasing and no glow halo) |
+| `LBP2_FIFO_SPIN_MAX=4` | Caps the game's RSX-backlog spin, which otherwise freezes ~0.5 s when the RSX has caught up (most often with `LBP2_NO_MLAA=1`) |
+| `SPU_FLOAT_RZ=1` | Runs SPU code with the host in round-toward-zero, flush-to-zero mode, so single-precision SPU float ops are one native op each (same bits as the exact forms; ~+16% fps in levels) |
 | `SPU_INTERP_UNLIFTED=1` | Interprets SPU code loaded at run time (the FMOD mixer's DSP plugins) |
 | `SPU_DMA_REPEAT_EXEMPT=8` | SPU image 8 waits on a control block between frames; the repeat watchdog must not halt it |
 | `SPU_WWS_PM_IMAGE=1` | The `Wws_Job` policy module is image 1 here, so job modules dispatch to lifted code |
