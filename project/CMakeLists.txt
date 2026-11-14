@@ -234,6 +234,9 @@ if(SPU_SOURCES)
                 list(APPEND _spu_opts "-mfma")
             endif()
         endif()
+        # The MFC parameter-channel writes (5-6 per DMA) become plain stores instead of calls
+        # into spu_wrch (runtime/spu/spu_context.h, SPU_WRCH_INLINE).
+        list(APPEND _spu_opts "-DSPU_WRCH_INLINE")
         # LBP2_SPU_EXTRA_FLAGS="...": more flags for the lifted SPU sources only (experiments:
         # -march=native, -O3, PGO). Empty by default.
         set(LBP2_SPU_EXTRA_FLAGS "" CACHE STRING "Extra compile flags for the lifted SPU sources")
