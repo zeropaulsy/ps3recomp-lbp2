@@ -234,6 +234,13 @@ if(SPU_SOURCES)
                 list(APPEND _spu_opts "-mfma")
             endif()
         endif()
+        # LBP2_SPU_EXTRA_FLAGS="...": more flags for the lifted SPU sources only (experiments:
+        # -march=native, -O3, PGO). Empty by default.
+        set(LBP2_SPU_EXTRA_FLAGS "" CACHE STRING "Extra compile flags for the lifted SPU sources")
+        if(LBP2_SPU_EXTRA_FLAGS)
+            separate_arguments(_spu_extra UNIX_COMMAND "${LBP2_SPU_EXTRA_FLAGS}")
+            list(APPEND _spu_opts ${_spu_extra})
+        endif()
         set_source_files_properties(${SPU_SOURCES} PROPERTIES COMPILE_OPTIONS "${_spu_opts}")
     endif()
 endif()
@@ -360,4 +367,4 @@ if(APPLE)
 endif()
 
 # LBP2 shims: see lbp2_local.cpp
-target_link_options(${PROJECT_NAME} PRIVATE -Wl,--wrap=cellNetCtlGetState -Wl,--wrap=ppu_sysprx_register -Wl,--wrap=rsx_null_backend_init)
+target_link_options(${PROJECT_NAME} PRIVATE -Wl,--wrap=cellNetCtlGetState -Wl,--wrap=ppu_sysprx_register -Wl,--wrap=rsx_null_backend_init -Wl,--wrap=lv2_syscall)

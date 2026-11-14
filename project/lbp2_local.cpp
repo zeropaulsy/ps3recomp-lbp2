@@ -214,7 +214,89 @@ static void kb_getinfo_none(ppu_context* c) {
     ret(c, 0);
 }
 
+/* 9. Experiment, env LBP2_NO_MLAA=1: skip Edge MLAA (jaggies, no ~17 ms SPU round trip).
+ *    The game has no switch (game-internals.md, "Post-processing, MLAA"). Each frame the
+ *    PPU fills 5 task params (0xACFD3C) and clears done flag obj+0x28; the RSX copies the
+ *    scene to the MLAA buffer, then the GCM user handler (cmd 0xF5AAC0DE) calls
+ *    _cellSpursSendSignal for each of the 5 MLAA tasks (0xACFF14); the last task writes
+ *    label 0x58 = frame counter and sets obj+0x28; the RSX acquires 0x58 and copies the
+ *    buffer back. Here, signals to the MLAA taskset don't wake its tasks: the last one does
+ *    the last task's two writes instead, so the copy-back returns the unsmoothed scene.
+ *    obj = *(TOC 0xC65AF0 + 0x2548) = {+4 taskset, +8 task id array, +0x10 params (64 B
+ *    each), +0x2C count}; 0xACFD3C puts the completion words in task 0's params: +0 label
+ *    value (the frame counter), +4 label EA (obj+0x24, seen 0x20000580), +8 = &obj+0x28.
+ *    Run nomlaa-2 (2026-11-13): 18.5 fps vs 16.4, but the glow halo around glowing
+ *    objects disappears too, not only the anti-aliasing. Opt-in experiment only. */
+extern "C" int32_t _cellSpursSendSignal(void* taskset, uint32_t taskId);
+static bool g_no_mlaa;
+static void store_be32(uint32_t ea, uint32_t v) {
+    __atomic_store_n((uint32_t*)(vm_base + ea), __builtin_bswap32(v), __ATOMIC_RELEASE);
+}
+static void send_signal(ppu_context* c) {
+    const uint32_t ts = (uint32_t)c->gpr[3], id = (uint32_t)c->gpr[4];
+    const uint32_t obj = be32(0xC65AF0u + 0x2548u);
+    if (g_no_mlaa && ts && obj && be32(obj + 4) == ts) {
+        const uint32_t n = vm_base[obj + 0x2C];
+        if (n && id == be32(be32(obj + 8) + (n - 1) * 4)) {
+            const uint32_t last = be32(obj + 0x10);   /* task 0's params (see above) */
+            const uint32_t counter = be32(be32(0xC65AF0u + 0x2564u));
+            uint32_t value = be32(last), flag = be32(last + 8);
+            if (!value) value = counter;
+            static unsigned logged;
+            if (logged < 3) {
+                logged++;
+                fprintf(stderr, "[lbp2-local] LBP2_NO_MLAA: taskset 0x%08X id %u: label 0x58 = 0x%08X "
+                        "(counter 0x%08X, param+4 0x%08X), flag 0x%08X (obj+0x28 0x%08X)\n",
+                        ts, id, value, be32(be32(0xC65AF0u + 0x2564u)), be32(last + 4), flag, obj + 0x28);
+            }
+            store_be32(0x20000580u, value);          /* GCM label 0x58 */
+            store_be32(flag ? flag : obj + 0x28, 1); /* the PPU waits for nonzero (0xACFE98) */
+        }
+        ret(c, 0);
+        return;
+    }
+    ret(c, _cellSpursSendSignal((void*)(uintptr_t)ts, id));
+}
+
+/* 10. LBP2_SKIP_INTRO=1 (env.sh default): skip the intro movie. START skips it once the game
+ *     is ready for that, which happens anywhere from ~44 to ~48 s, and START in the level
+ *     opens the pause menu (and the next one closes it), so timed PAD_SCRIPT presses either
+ *     miss the skip or leave the level paused depending on the run (nomlaa-3 stayed paused,
+ *     at the 30 Hz cap). This pulses START (20 polls on, 40 off) from 38 s after the first
+ *     pad poll until the level's first Edge MLAA kick: counter *(*(TOC+0x2564)) becomes
+ *     nonzero at the level start and never before (no MLAA in the movie or menus). Gives up
+ *     at 150 s. Cross doesn't skip the movie (run skip-3). */
+extern "C" int32_t cellPadGetData(uint32_t port_no, void* data);
+static bool g_skip_intro;
+static void pad_get_data(ppu_context* c) {
+    const uint32_t port = (uint32_t)c->gpr[3], ea = (uint32_t)c->gpr[4];
+    const int32_t rc = cellPadGetData(port, (void*)(uintptr_t)ea);
+    ret(c, rc);
+    static std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+    static bool done;
+    static unsigned polls;
+    if (done || rc != 0 || port != 0 || !ea) return;
+    const double t = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    if (t < 38.0) return;
+    const uint32_t ctr_slot = be32(0xC65AF0u + 0x2564u);
+    if (t > 150.0 || (ctr_slot && be32(ctr_slot) != 0)) {
+        done = true;
+        fprintf(stderr, "[lbp2-local] LBP2_SKIP_INTRO: stopped at %.1f s (%s)\n", t,
+                t > 150.0 ? "timeout" : "level started");
+        return;
+    }
+    if (polls++ % 60 < 20) vm_base[ea + 9] |= 0x08;   /* button[2] DIGITAL1 low byte: START */
+}
+
 extern "C" void __wrap_ppu_sysprx_register(void) {
+    { const char* e = getenv("LBP2_SKIP_INTRO"); g_skip_intro = e && *e == '1'; }
+    if (g_skip_intro)
+        ps3_hle_register_ctx(0x8B72CDA1u, "cellPadGetData (lbp2: LBP2_SKIP_INTRO)", pad_get_data);
+    { const char* e = getenv("LBP2_NO_MLAA"); g_no_mlaa = e && *e == '1'; }
+    if (g_no_mlaa) {
+        fprintf(stderr, "[lbp2-local] LBP2_NO_MLAA=1: Edge MLAA skipped (experiment)\n");
+        ps3_hle_register_ctx(0xE0A6DBE4u, "_cellSpursSendSignal (lbp2: LBP2_NO_MLAA)", send_signal);
+    }
     if (getenv("LBP2_NO_KB"))
         ps3_hle_register_ctx(0x2F1774D5u, "cellKbGetInfo (lbp2: no keyboard)", kb_getinfo_none);
     if (cellKbGetData)
@@ -308,4 +390,57 @@ __attribute__((constructor)) static void lbp2_install_crash_bt() {
     sigaction(SIGSEGV, &sa, nullptr);
     sigaction(SIGBUS, &sa, nullptr);
     { void* warm[2]; backtrace(warm, 2); }   /* load libgcc now, not inside the handler */
+}
+
+/* 11. LBP2_FIFO_SPIN_MAX=<n>: cap the edge spin in the game's RSX-backlog query to n usleeps.
+ *     0x5DE6FC reads the GCM control register and, before returning put - get, loops up to
+ *     1001 x usleep(30) (r30 = 0x3E9, LR 0x5DE71C) while get or put is within 4 KB of either
+ *     end of the 4 MB ring. Its caller is the game's command-buffer callback (0x5DEAA8, at
+ *     every 32 KB segment end). When the RSX has caught up and parks on the 0x43-0x45
+ *     acquire just after a ring wrap (get < 0x1000), the main thread hits the next segment
+ *     end before it kicks the job that writes that label, so it spins the whole 1001
+ *     iterations (~500 ms with host usleep granularity) and the RSX waits with it. On
+ *     hardware the RSX runs far enough behind that this never lines up; with LBP2_NO_MLAA
+ *     it does (runs skip-4, stall-1: 506 ms stalls every ~15 s, ~4% of the frames' time).
+ *     The hook lowers the loop counter at the loop's usleep, so the spin ends after n more
+ *     iterations; the query then returns the (exact: the RSX is parked) put - get as usual.
+ *     Linked with -Wl,--wrap=lv2_syscall. */
+extern "C" void __real_lv2_syscall(ppu_context* ctx);
+static int g_fifo_spin_max = -1;
+extern "C" void __wrap_lv2_syscall(ppu_context* ctx) {
+    if (ctx->gpr[11] == 0x8D && (uint32_t)ctx->lr == 0x005DE71Cu) {
+        if (g_fifo_spin_max < 0) {
+            const char* e = getenv("LBP2_FIFO_SPIN_MAX");
+            g_fifo_spin_max = e && *e ? atoi(e) : 0;
+            if (g_fifo_spin_max > 0)
+                fprintf(stderr, "[lbp2-local] LBP2_FIFO_SPIN_MAX=%d: RSX backlog query spin capped\n", g_fifo_spin_max);
+        }
+        if (g_fifo_spin_max > 0 && ctx->gpr[30] > (uint64_t)g_fifo_spin_max) {
+            static unsigned n;
+            if (n++ < 8)
+                fprintf(stderr, "[lbp2-local] FIFO backlog spin capped (get 0x%08X put 0x%08X)\n",
+                        be32(0x20002000u + 4), be32(0x20002000u));
+            ctx->gpr[30] = (uint64_t)g_fifo_spin_max;
+        }
+    }
+    __real_lv2_syscall(ctx);
+}
+
+/* 12. LBP2_GCOV_DUMP_AT=<s>: PGO training helper. When the binary is built with
+ *     -fprofile-generate (LBP2_SPU_EXTRA_FLAGS), write the profile at <s> seconds:
+ *     run.sh ends the game with SIGKILL, so the at-exit write never happens. */
+extern "C" void __gcov_dump(void) __attribute__((weak));
+static void* gcov_dump_thread(void* arg) {
+    const unsigned s = (unsigned)(uintptr_t)arg;
+    sleep(s);
+    fprintf(stderr, "[lbp2-local] LBP2_GCOV_DUMP_AT: writing the profile at %u s\n", s);
+    __gcov_dump();
+    fprintf(stderr, "[lbp2-local] LBP2_GCOV_DUMP_AT: profile written\n");
+    return nullptr;
+}
+__attribute__((constructor)) static void lbp2_gcov_dump_start() {
+    const char* e = getenv("LBP2_GCOV_DUMP_AT");
+    if (!e || !*e || !__gcov_dump) return;
+    pthread_t th;
+    if (pthread_create(&th, nullptr, gcov_dump_thread, (void*)(uintptr_t)atoi(e)) == 0) pthread_detach(th);
 }
