@@ -220,6 +220,12 @@ static DWORD WINAPI frame_clock(LPVOID)
     { const char* e = getenv("LBP2_RSX_POLL_US");
       if (e && *e) { long v = strtol(e, NULL, 10); if (v >= 50 && v <= 4000) poll_us = (unsigned)v; } }
     ULONGLONG last_pump = 0;
+    /* LBP2_VBLANK_MS: vblank tick period (default 16, ~60 Hz). The game flips every
+     * second vblank, so this caps it at 1000 / (2 * period) fps. Smaller values are
+     * for measuring headroom only: game timing that counts vblanks runs fast. */
+    unsigned vblank_ms = 16;
+    { const char* e = getenv("LBP2_VBLANK_MS");
+      if (e && *e) { long v = strtol(e, NULL, 10); if (v >= 1 && v <= 100) vblank_ms = (unsigned)v; } }
 
     for (;;) {
 #ifdef _WIN32
@@ -247,7 +253,7 @@ static DWORD WINAPI frame_clock(LPVOID)
              * labels the game's per-frame logic blocks on, so it has to keep
              * advancing at 60 Hz even while present() throttles. */
             if (rsx_ok) cellGcm_rsx_process_fifo();
-            next_tick += 16;             /* ~60 Hz */
+            next_tick += vblank_ms;      /* ~60 Hz by default */
             fired++;
         }
         if (fired >= 240) next_tick = now;   /* fell too far behind -- resync */
