@@ -427,6 +427,57 @@ static int run_guest(uint32_t entry, uint32_t stack_top)
 static int run_guest(uint32_t entry, uint32_t stack_top) { return ppu_run(entry, stack_top); }
 #endif
 
+#if defined(__linux__)
+#include <sched.h>
+/* LBP2_LANE_CORE (local): one physical core for SPURS lane 0. The game's MAIN
+ * job chain (maxContention 1) runs on lane 0 almost entirely and is the
+ * frame's critical path; whenever another busy thread shared its core as an
+ * SMT sibling, the lane took ~7% longer (2026-11-16: +1.6% fps with the core
+ * to itself, no gain with only the lane pinned and its sibling shared).
+ * Called first thing in main, before any thread exists: the core's CPUs leave
+ * the process mask, so every later thread inherits a mask without them, and
+ * SPURS_LANE0_CPUS hands them to lane 0 (libs/spurs/cellSpurs.c).
+ * Unset or "auto": the core of the highest CPU we may run on, only with 8 or
+ * more CPUs. <n>: the core holding CPU n. "off": leave affinity alone. */
+static void reserve_lane_core(void)
+{
+    const char* e = getenv("LBP2_LANE_CORE");
+    if (e && !strcmp(e, "off")) return;
+    cpu_set_t set;
+    if (sched_getaffinity(0, sizeof set, &set)) return;
+    int cpu = -1;
+    if (e && *e && strcmp(e, "auto")) {
+        cpu = atoi(e);
+    } else {
+        if (CPU_COUNT(&set) < 8) return;
+        for (int i = CPU_SETSIZE - 1; i >= 0; i--) if (CPU_ISSET(i, &set)) { cpu = i; break; }
+    }
+    if (cpu < 0 || cpu >= CPU_SETSIZE || !CPU_ISSET(cpu, &set)) return;
+    char path[128], list[128] = {0};
+    snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/topology/thread_siblings_list", cpu);
+    FILE* f = fopen(path, "r");
+    if (f) { if (!fgets(list, sizeof list, f)) list[0] = 0; fclose(f); }
+    list[strcspn(list, "\r\n")] = 0;
+    if (!list[0]) snprintf(list, sizeof list, "%d", cpu);
+    /* "5,11" or "4-5": take those CPUs out of the set. */
+    cpu_set_t rest = set; int taken = 0;
+    for (const char* s = list; *s;) {
+        char* end; long a = strtol(s, &end, 10), b = a;
+        if (end == s) return;
+        if (*end == '-') { s = end + 1; b = strtol(s, &end, 10); if (end == s) return; }
+        for (long c = a; c <= b && c < CPU_SETSIZE; c++) if (c >= 0 && CPU_ISSET(c, &rest)) { CPU_CLR(c, &rest); taken++; }
+        s = end; if (*s == ',') s++; else if (*s) return;
+    }
+    if (!taken || CPU_COUNT(&rest) < 2) return;
+    if (sched_setaffinity(0, sizeof rest, &rest)) return;
+    setenv("SPURS_LANE0_CPUS", list, 0);
+    printf("[boot] lane core: CPUs %s kept for SPURS lane 0 (LBP2_LANE_CORE=off to disable)\n",
+           getenv("SPURS_LANE0_CPUS"));
+}
+#else
+static void reserve_lane_core(void) {}
+#endif
+
 extern "C" void cellGame_init_from_paramsfo(const char*);  /* local */
 int main(int argc, char** argv)
 {
@@ -434,6 +485,7 @@ int main(int argc, char** argv)
         printf("usage: %s <PPU ELF>\n", argv[0]);
         return 2;
     }
+    reserve_lane_core();   /* local: before any thread is created */
 
 #ifdef _WIN32
 #pragma comment(lib, "winmm.lib")
