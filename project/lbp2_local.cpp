@@ -226,7 +226,8 @@ static void kb_getinfo_none(ppu_context* c) {
  *    each), +0x2C count}; 0xACFD3C puts the completion words in task 0's params: +0 label
  *    value (the frame counter), +4 label EA (obj+0x24, seen 0x20000580), +8 = &obj+0x28.
  *    Run nomlaa-2 (2026-11-13): 18.5 fps vs 16.4, but the glow halo around glowing
- *    objects disappears too, not only the anti-aliasing. Opt-in experiment only.
+ *    objects disappears too, not only the anti-aliasing. On by default in env.sh since
+ *    2026-11-16 (user: losing the glow is fine for now); LBP2_NO_MLAA=0 turns MLAA back on.
  *    It also turns on the runtime's RSX_ENGINE_XFER_SHADOW unless that is set. */
 extern "C" int32_t _cellSpursSendSignal(void* taskset, uint32_t taskId);
 static bool g_no_mlaa;
@@ -295,7 +296,7 @@ extern "C" void __wrap_ppu_sysprx_register(void) {
         ps3_hle_register_ctx(0x8B72CDA1u, "cellPadGetData (lbp2: LBP2_SKIP_INTRO)", pad_get_data);
     { const char* e = getenv("LBP2_NO_MLAA"); g_no_mlaa = e && *e == '1'; }
     if (g_no_mlaa) {
-        fprintf(stderr, "[lbp2-local] LBP2_NO_MLAA=1: Edge MLAA skipped (experiment)\n");
+        fprintf(stderr, "[lbp2-local] LBP2_NO_MLAA=1: Edge MLAA skipped\n");
         ps3_hle_register_ctx(0xE0A6DBE4u, "_cellSpursSendSignal (lbp2: LBP2_NO_MLAA)", send_signal);
         /* With no MLAA job the scene comes back from the MLAA buffer unchanged, so its copy
          * out and back can stay on the GPU (runtime RSX_ENGINE_XFER_SHADOW: no flush and

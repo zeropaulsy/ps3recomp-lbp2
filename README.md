@@ -93,8 +93,9 @@ Progress shows in the log as `[lbp2-local] t=Ns flips=N` and `init at: step N`.
 |----------|-----|
 | `PAD_SCRIPT=25:0x4000,30:0x4000,35:0x4000` | Presses Cross for the game's two boot prompts |
 | `LBP2_SKIP_INTRO=1` | Pulses START from 38 s until the level starts, which skips the intro movie (never pauses the level) |
-| `LBP2_NO_MLAA=1` | Opt-in: skips the Edge MLAA SPU pass (~+12-19% fps; no anti-aliasing and no glow halo) |
+| `LBP2_NO_MLAA=1` | Skips the Edge MLAA SPU pass: ~+20% fps, but no anti-aliasing and no glow halo. `LBP2_NO_MLAA=0` turns MLAA back on |
 | `LBP2_FIFO_SPIN_MAX=4` | Caps the game's RSX-backlog spin, which otherwise freezes ~0.5 s when the RSX has caught up (most often with `LBP2_NO_MLAA=1`) |
+| `LBP2_RSX_POLL_US=250` | The RSX thread sleeps 250 us between FIFO passes instead of 4 ms (range 50..4000); ~+11% fps walking the level |
 | `SPU_FLOAT_RZ=1` | Runs SPU code with the host in round-toward-zero, flush-to-zero mode, so single-precision SPU float ops are one native op each (same bits as the exact forms; ~+16% fps in levels) |
 | `SPU_INTERP_UNLIFTED=1` | Interprets SPU code loaded at run time (the FMOD mixer's DSP plugins) |
 | `SPU_DMA_REPEAT_EXEMPT=8` | SPU image 8 waits on a control block between frames; the repeat watchdog must not halt it |
@@ -109,8 +110,6 @@ Progress shows in the log as `[lbp2-local] t=Ns flips=N` and `init at: step N`.
 
 Useful extras: `LBP2_NO_RASTER=1` (headless build without the software rasterizer, much
 faster), `GCM_SEMA_STATS=1`, `VK_BLACK_STATS=1`, `RSX_PRESENT_LOG=1`, `LBP2_CRASH_BT=1`.
-`LBP2_RSX_POLL_US=<50..4000>` (default 4000) sets how long the RSX thread sleeps between FIFO
-passes; 250 gave a few percent more fps in levels.
 
 ## Credits
 
