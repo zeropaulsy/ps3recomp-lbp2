@@ -30,9 +30,24 @@ extern "C" int32_t __wrap_cellNetCtlGetState(int32_t* state) {
     return rc;
 }
 
+/* 2b. Stall dump: when the init table sits on one step for 20 s (and again at 60 s), print every
+ *     guest PPU thread's last lv2/HLE callsite, its in-flight syscall, a few registers and its
+ *     guest stack back chain (saved LRs). Normal boots finish all 73 steps in 5-15 s. Added for
+ *     the step 13 'ScratchPad' hang (2026-11-17), which never shows under gdb.
+ *     The ctx pointers come from ppu_prof_stamp (linked with -Wl,--wrap=ppu_prof_stamp), which
+ *     both dispatchers call with the guest ctx on every lv2 syscall and HLE call. */
+struct ppu_context;
+extern "C" void __real_ppu_prof_stamp(void* ctx, unsigned lr);
+extern "C" int ppu_prof_snapshot(int idx, unsigned* tid, unsigned* cia, const char** name);
+extern "C" uint32_t g_sc_inflight[64];
+static ppu_context* volatile g_stall_ctx[65];
+static volatile uint32_t g_stall_lr[65];
+static void stall_dump(unsigned t, const char* cur);
+
 static void* progress(void*) {
     static const uint32_t HEAD_SLOT = 0xC65AF0u - 0x74ECu;
     char last[128] = "";
+    unsigned since = 0, dumps = 0;
     for (unsigned t = 0;; t += 5) {
         sleep(5);
         if (!vm_base) continue;
@@ -49,9 +64,14 @@ static void* progress(void*) {
             }
             node = nx ? nx : node + 0x24;
         }
+        if (strcmp(cur, last)) { since = t; dumps = 0; }
         if (strcmp(cur, last) || t % 60 == 0) {
             fprintf(stderr, "[lbp2-local] t=%us init at: %s\n", t, cur);
             strcpy(last, cur);
+        }
+        if (cur[0] && strncmp(cur, "ALL-DONE", 8) && dumps < 2 && t - since >= (dumps ? 60u : 20u)) {
+            dumps++;
+            stall_dump(t, cur);
         }
         /* Frame progress. The RSX draw log stops after 32 lines (PS3_LOG_FIRST),
          * so a count of logged draws says nothing about whether frames run. */
@@ -315,6 +335,40 @@ extern "C" void __wrap_ppu_sysprx_register(void) {
     ps3_hle_register_ctx(0xFBA04F37u, "recv (lbp2 loopback)",       lo_recv);
     ps3_hle_register_ctx(0x3F09E20Au, "select (lbp2 loopback)",     lo_select);
     __real_ppu_sysprx_register();
+}
+
+extern "C" void __wrap_ppu_prof_stamp(void* vctx, unsigned lr) {
+    unsigned t = (unsigned)((ppu_context*)vctx)->thread_id;
+    if (t < 65) { g_stall_ctx[t] = (ppu_context*)vctx; g_stall_lr[t] = lr; }
+    __real_ppu_prof_stamp(vctx, lr);
+}
+
+static bool guest_ok(uint32_t a) { return a >= 0x10000u && a < 0xFFFF0000u; }
+
+static void stall_dump(unsigned t, const char* cur) {
+    fprintf(stderr, "[lbp2-stall] t=%us stuck at %s: guest PPU threads\n", t, cur);
+    for (unsigned tid = 1; tid < 65; tid++) {
+        ppu_context* c = g_stall_ctx[tid];
+        if (!c) continue;
+        unsigned stid = 0, scia = 0; const char* nm = "?";
+        if (!ppu_prof_snapshot((int)tid - 1, &stid, &scia, &nm)) nm = tid == 1 ? "main" : "(gone)";
+        uint32_t sp = (uint32_t)c->gpr[1];
+        fprintf(stderr, "[lbp2-stall] tid %u '%s' sc %u callsite 0x%08X lr 0x%08X ctr 0x%08X sp 0x%08X "
+                "r3 %08X r4 %08X r5 %08X r6 %08X r31 %08X\n",
+                tid, nm, tid < 64 ? g_sc_inflight[tid] : 0u, g_stall_lr[tid], (uint32_t)c->lr,
+                (uint32_t)c->ctr, sp, (uint32_t)c->gpr[3], (uint32_t)c->gpr[4], (uint32_t)c->gpr[5],
+                (uint32_t)c->gpr[6], (uint32_t)c->gpr[31]);
+        char line[512]; int n = 0;
+        for (int f = 0; f < 24 && guest_ok(sp); f++) {
+            uint32_t back = be32(sp + 4);              /* 64-bit back chain, low word */
+            if (back <= sp || back - sp > 0x100000u || !guest_ok(back)) break;
+            uint32_t saved = be32(back + 16 + 4);      /* caller frame's LR save doubleword */
+            n += snprintf(line + n, sizeof line - n, " %08X", saved);
+            if (n >= (int)sizeof line - 12) break;
+            sp = back;
+        }
+        fprintf(stderr, "[lbp2-stall]   chain:%s\n", n ? line : " (none)");
+    }
 }
 
 __attribute__((constructor)) static void start_progress() {
