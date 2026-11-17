@@ -11,12 +11,26 @@ decrypt and lift it yourself.
 
 ## Status
 
-- Boots through all 73 init steps, plays the intro movie and runs the opening credits level
-  indefinitely (6-minute runs).
-- The Vulkan build renders that level correctly with the game's own shaders. Known problems:
-  white patches during the level intro (~110 s), the final image is shrunk to 0.875 of the
-  frame, and it runs at ~7 frames/s (~11.5 headless with `LBP2_NO_RASTER=1`).
-- No audio by design in these scripts (see "Running").
+As of 2026-11-17:
+
+- **Boots reliably** through all 73 init steps (about 5 s), skips the intro movie, and reaches the
+  opening credits level at about 40 s. The level can be walked through with scripted controller
+  input; the cutscene after it plays, and the next level (Avalon) loads.
+- **Renders correctly with the game's own shaders** (Vulkan build), in a window or headless.
+- **Speed:** the level runs at the game's own 30 fps cap. Without the cap it does about 39 fps
+  standing and 34-38 fps walking. The in-engine cutscene after the credits course is the slow part
+  (16-20 fps). The limit is the game's SPU job code (translated to native code, but the job lane
+  the main thread waits on needs about 18 ms per frame while walking, more in that cutscene).
+- **Audio works internally:** the FMOD mixer and all its codec/effect plugins run as translated code
+  and keep up in real time. These scripts never play it (see "Running").
+- **Known problems:**
+  - An occasional long frame remains (one or two a minute, 100-150 ms), and about 3 frames a
+    second take 40-100 ms instead of 33.
+  - MLAA anti-aliasing is off by default for speed (`LBP2_NO_MLAA=1`), which also removes the
+    glow halo.
+  - The final image is drawn at 0.875 of the frame, with black bars. That scale comes from the
+    game's own final composite pass; why is still unchecked.
+  - Online features are stubbed (offline only).
 
 <img width="1307" height="798" alt="Screenshot From 2026-11-17 18-32-30" src="https://github.com/user-attachments/assets/8e3645e4-cd0d-4ad1-a997-933b7bf20bfe" />
 
@@ -24,7 +38,7 @@ decrypt and lift it yourself.
 
 | Path | What |
 |------|------|
-| `project/` | The game project: `CMakeLists.txt`, `main.cpp`, `stubs.cpp`, and `lbp2_local.cpp` (game-specific shims: offline `cellNetCtlGetState`, a UDP loopback for the game's party code, init-step logging, `LBP2_NO_RASTER`, `LBP2_CRASH_BT`) |
+| `project/` | The game project: `CMakeLists.txt`, `main.cpp`, `stubs.cpp`, and `lbp2_local.cpp` (game-specific shims: offline `cellNetCtlGetState`, a UDP loopback for the game's party code, intro skip, MLAA skip, registration of the FMOD plugins as relocatable SPU code, init-step logging and stall dumps, `LBP2_NO_RASTER`, `LBP2_CRASH_BT`) |
 | `env.sh` | Workspace paths and the runtime settings LBP2 needs; sourced by the scripts |
 | `run.sh` | Silent launcher: `./run.sh <seconds> [label]`, log in `runs/` |
 | `run_frames.sh` | Same, saving a Vulkan frame every 5 s: `./run_frames.sh <seconds> <label> <new-dir>` |
@@ -60,6 +74,14 @@ decrypt and lift it yourself.
    `lift_jobmods.py --jobmods spu/jobmods --out spu --register spu/jobmods_register.c
    --symbol-prefix lbp2`). This step is not scripted yet; the commands are what the bring-up
    used and may need adjusting.
+   The FMOD mixer copies its 26 plugin images (`spu_0000`-`spu_0004` and `spu_0008`-`spu_0028`)
+   to its own choice of LS address, so those must be lifted position-independent, one by one:
+   ```
+   python3 ps3recomp/tools/spu_lifter.py spu/images/<img>.elf --auto-functions spu/images/<img>.elf \
+       --symbol-prefix <img>_ -o spu/<img> --reloc
+   ```
+   `build_spu_workloads.py --relift` lifts them without `--reloc`; redo these afterwards. Without
+   it they run in the SPU interpreter, the mixer falls behind, frames stall and the audio drops out.
 6. **Configure and build** (the lifted files are large: keep the job count low, about 1.5 GB
    of RAM per job):
    ```
@@ -84,6 +106,10 @@ Any new launcher should do the same.
 BIN=$PWD/build-vk/lbp2_recomp ./run_frames.sh 200 vk frames-1 # Vulkan, a frame every 5 s
 ```
 
+Add `PS3RECOMP_VK_WINDOW=1` to the Vulkan build to watch it in a window (F11 for fullscreen,
+Esc quits). Controller input is scripted: `PAD_SCRIPT=<sec>:<buttons>,...` presses buttons and
+`PAD_STICK` moves the left stick (format in the runtime's `libs/input/cellPad.c`).
+
 Progress shows in the log as `[lbp2-local] t=Ns flips=N` and `init at: step N`.
 
 ### Runtime settings
@@ -99,7 +125,7 @@ Progress shows in the log as `[lbp2-local] t=Ns flips=N` and `init at: step N`.
 | `LBP2_FIFO_SPIN_MAX=4` | Caps the game's RSX-backlog spin, which otherwise freezes ~0.5 s when the RSX has caught up (most often with `LBP2_NO_MLAA=1`) |
 | `LBP2_RSX_POLL_US=250` | The RSX thread sleeps 250 us between FIFO passes instead of 4 ms (range 50..4000); ~+11% fps walking the level |
 | `SPU_FLOAT_RZ=1` | Runs SPU code with the host in round-toward-zero, flush-to-zero mode, so single-precision SPU float ops are one native op each (same bits as the exact forms; ~+16% fps in levels) |
-| `SPU_INTERP_UNLIFTED=1` | Interprets SPU code loaded at run time (the FMOD mixer's DSP plugins) |
+| `SPU_INTERP_UNLIFTED=1` | Interprets SPU code loaded at run time that has no translation (the FMOD plugins have one, see "Building" step 5) |
 | `SPU_DMA_REPEAT_EXEMPT=8` | SPU image 8 waits on a control block between frames; the repeat watchdog must not halt it |
 | `SPU_WWS_PM_IMAGE=1` | The `Wws_Job` policy module is image 1 here, so job modules dispatch to lifted code |
 | `GCM_USER_QUEUE=1` | Delivers every GCM user command; the game releases a job-list gate per command |
@@ -112,6 +138,9 @@ Progress shows in the log as `[lbp2-local] t=Ns flips=N` and `init at: step N`.
 
 Useful extras: `LBP2_NO_RASTER=1` (headless build without the software rasterizer, much
 faster), `GCM_SEMA_STATS=1`, `VK_BLACK_STATS=1`, `RSX_PRESENT_LOG=1`, `LBP2_CRASH_BT=1`.
+For hunting stalls: `GCM_HITCH_MS=<n>` (frames slower than n ms), `SPU_TASK_SLOW_MS=<n>` (slow
+SPURS task rounds), `LBP2_FRAME_STALL_MS=<n>` (all guest threads when a frame stalls),
+`SPU_INTERP_STATS=10` (what SPU code runs interpreted).
 
 ## Credits
 
