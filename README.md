@@ -18,6 +18,8 @@ decrypt and lift it yourself.
   frame, and it runs at ~7 frames/s (~11.5 headless with `LBP2_NO_RASTER=1`).
 - No audio by design in these scripts (see "Running").
 
+<img width="1307" height="798" alt="Screenshot From 2026-11-17 18-32-30" src="https://github.com/user-attachments/assets/8e3645e4-cd0d-4ad1-a997-933b7bf20bfe" />
+
 ## What is here
 
 | Path | What |
