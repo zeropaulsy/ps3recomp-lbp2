@@ -5,7 +5,8 @@
  *    console reports with no link: CELL_OK and state=Disconnected. The runtime has already
  *    written Disconnected by then, so only the return value changes.
  * 2. A progress logger for the game's init-step table (read-only).
- * 3. A UDP loopback for sys_net (see below). */
+ * 3. A UDP loopback for sys_net (see below).
+ * 4. FMOD DSP plugins registered as relocatable lifted code (register_fmod_plugins). */
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -310,7 +311,55 @@ static void pad_get_data(ppu_context* c) {
     if (polls++ % 60 < 20) vm_base[ea + 9] |= 0x08;   /* button[2] DIGITAL1 low byte: START */
 }
 
+/* FMOD DSP plugins run lifted (relocatable). The FMOD mixer SPU task (image 9) DMAs each plugin's
+ * file image straight out of the game ELF (EA = file offset + 0x10000 + 0x100, i.e. from the
+ * first PT_LOAD, vaddr 0x80) into its swap area at LS ~0x21E00-0x2E000, at a different address
+ * per plugin, and re-fetches it on almost every use (plugin 8: ~1200 loads/s). The plugins are
+ * PIC (ila K + brsl-derived delta), so they are lifted once with spu_lifter.py --reloc at their
+ * ELF base 0x80; a GET from the EA below makes that copy resident and dispatch runs it at
+ * canon 0x80 + offset with ctx->reloc_delta. Before this they ran in the SPU interpreter, one
+ * full host core, and the mixer fell behind (main waits on FMOD's lock -> long frames).
+ * Image ids are spu/spu_workloads.c's. Span = the first PT_LOAD's filesz (all the code).
+ * SPU_RELOC_OFF=1 (runtime) skips these registrations for an A/B. */
+extern "C" void spu_overlay_register_region_reloc(uint32_t content_ea, uint32_t span,
+                                                  uint32_t canon, int image_id);
+static void register_fmod_plugins(void) {
+    static const struct { uint32_t file_off, span; int image_id; } k[] = {
+        /* Unnamed plugins (no SpuGUID/.note), loaded at LS 0x22010 while walking. */
+        {0xB81000u, 0x0520u,  2},   /* spu_0000 */
+        {0xB81680u, 0x1DB0u,  3},   /* spu_0001 */
+        {0xB83580u, 0x7250u,  4},   /* spu_0002 */
+        {0xB8AA80u, 0x4350u,  5},   /* spu_0003 */
+        {0xB8EF80u, 0x3BB0u,  6},   /* spu_0004 */
+        /* fmod_codec_* / fmod_dsp_* (their .note.spu_name). Not all are used in every level. */
+        {0xBE7400u, 0x62C0u, 10},   /* spu_0008 codec_adpcm */
+        {0xBEE080u, 0x2A90u, 11},   /* spu_0009 codec_raw */
+        {0xBF1500u, 0x2AF0u, 12},   /* spu_0010 dsp_chorus */
+        {0xBF4480u, 0x0850u, 13},   /* spu_0011 dsp_compressor */
+        {0xBF5180u, 0x39A0u, 14},   /* spu_0012 dsp_delay */
+        {0xBF9000u, 0x0770u, 15},   /* spu_0013 dsp_distortion */
+        {0xBF9C00u, 0x13F0u, 16},   /* spu_0014 dsp_echo */
+        {0xBFB480u, 0x07B0u, 17},   /* spu_0015 dsp_flange */
+        {0xBFC100u, 0x1710u, 18},   /* spu_0016 dsp_highpass */
+        {0xBFDD00u, 0x0E30u, 19},   /* spu_0017 dsp_itecho */
+        {0xBFF100u, 0x13B0u, 20},   /* spu_0018 dsp_lowpass2 */
+        {0xC00980u, 0x2580u, 21},   /* spu_0019 dsp_lowpass */
+        {0xC03380u, 0x10B0u, 22},   /* spu_0020 dsp_lowpass_simple */
+        {0xC04980u, 0x0540u, 23},   /* spu_0021 dsp_normalize */
+        {0xC05380u, 0x0720u, 24},   /* spu_0022 dsp_oscillator */
+        {0xC05F80u, 0x1360u, 25},   /* spu_0023 dsp_parameq */
+        {0xC07780u, 0x3450u, 26},   /* spu_0024 dsp_pitchshift */
+        {0xC0B080u, 0x3190u, 27},   /* spu_0025 dsp_sfxreverb */
+        {0xC0E700u, 0x1BA0u, 28},   /* spu_0026 dsp_tremolo */
+        {0xC10900u, 0x3BA0u, 29},   /* spu_0027 codec_mpeg_functions */
+        {0xC14B00u, 0x1DD0u, 30},   /* spu_0028 codec_mpeg_init */
+    };
+    for (const auto& p : k)
+        spu_overlay_register_region_reloc(p.file_off + 0x10000u + 0x100u, p.span, 0x80u, p.image_id);
+}
+
 extern "C" void __wrap_ppu_sysprx_register(void) {
+    register_fmod_plugins();
     { const char* e = getenv("LBP2_SKIP_INTRO"); g_skip_intro = e && *e == '1'; }
     if (g_skip_intro)
         ps3_hle_register_ctx(0x8B72CDA1u, "cellPadGetData (lbp2: LBP2_SKIP_INTRO)", pad_get_data);
@@ -368,7 +417,32 @@ static void stall_dump(unsigned t, const char* cur) {
             sp = back;
         }
         fprintf(stderr, "[lbp2-stall]   chain:%s\n", n ? line : " (none)");
+        /* What r3 points at: for a thread blocked in sys_lwmutex_lock that is the lwmutex
+         * (owner tid, then waiter, attribute, recursive count). */
+        uint32_t r3 = (uint32_t)c->gpr[3];
+        if (guest_ok(r3) && r3 < 0x40000000u)
+            fprintf(stderr, "[lbp2-stall]   *r3: %08X %08X %08X %08X\n", be32(r3), be32(r3 + 4),
+                    be32(r3 + 8), be32(r3 + 12));
     }
+}
+
+/* 2c. LBP2_FRAME_STALL_MS=<n>: the same dump when no flip has come for n ms after the first 300
+ *     flips (once per stalled frame, at most 10 per run). For the in-level near-freeze
+ *     (2026-11-17: 1-7 fps for ~50 s, frames ~2 s apart, background threads running normally). */
+static void* frame_stall_watch(void*) {
+    const unsigned lim = (unsigned)atoi(getenv("LBP2_FRAME_STALL_MS"));
+    unsigned last = 0, still = 0, dumps = 0; bool fired = false;
+    for (unsigned ms = 0; dumps < 10; ms += 50) {
+        usleep(50000);
+        unsigned f = cellGcm_flip_request_count();
+        if (f != last) { last = f; still = 0; fired = false; continue; }
+        still += 50;
+        if (f < 300 || fired || still < lim) continue;
+        fired = true; dumps++;
+        char what[64]; snprintf(what, sizeof what, "flip %u for %u ms", f, still);
+        stall_dump(ms / 1000, what);
+    }
+    return nullptr;
 }
 
 __attribute__((constructor)) static void start_progress() {
@@ -382,6 +456,8 @@ __attribute__((constructor)) static void start_progress() {
 #endif
     pthread_t th;
     if (pthread_create(&th, nullptr, progress, nullptr) == 0) pthread_detach(th);
+    if (getenv("LBP2_FRAME_STALL_MS") && pthread_create(&th, nullptr, frame_stall_watch, nullptr) == 0)
+        pthread_detach(th);
 }
 
 /* 7. LBP2_NO_RASTER=1: skip the headless null backend's CPU rasterizer. On Linux the
