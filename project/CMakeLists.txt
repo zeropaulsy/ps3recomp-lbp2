@@ -246,6 +246,15 @@ if(SPU_SOURCES)
         # The MFC parameter-channel writes (5-6 per DMA) become plain stores instead of calls
         # into spu_wrch (runtime/spu/spu_context.h, SPU_WRCH_INLINE).
         list(APPEND _spu_opts "-DSPU_WRCH_INLINE")
+        # The x86 SPU float ops assume round toward zero + FZ + DAZ (SPU_XR_ASSUME_RZ, fork
+        # runtime/spu/spu_helpers.h): no per-op mode test and no round-to-nearest form beside each
+        # op, a third less lifted SPU code; the runtime then sets that mode for every SPU run
+        # whatever SPU_FLOAT_RZ says. ~3% fps in LBP2's levels. -DLBP2_SPU_ASSUME_RZ=OFF keeps the
+        # per-op test (SPU_FLOAT_RZ=0 then runs the exact round-to-nearest forms).
+        option(LBP2_SPU_ASSUME_RZ "Lifted SPU float ops assume the round-toward-zero mode" ON)
+        if(LBP2_SPU_ASSUME_RZ)
+            list(APPEND _spu_opts "-DSPU_XR_ASSUME_RZ")
+        endif()
         # Every lqd/stqd tests a diagnostics gate (SPU_LS_WATCH, SPU_LS_LOWREAD, SPU_SMC_WATCH,
         # SPU_WWS_PROBE). Title builds compile it out (SPU_LS_NO_DIAG); -DLBP2_SPU_LS_DIAG=ON
         # puts it back for debugging. lbp2_local.cpp warns if those variables are set without it.
