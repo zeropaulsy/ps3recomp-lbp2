@@ -17,10 +17,10 @@ As of 2026-11-17:
   opening credits level at about 40 s. The level can be walked through with scripted controller
   input; the cutscene after it plays, and the next level (Avalon) loads.
 - **Renders correctly with the game's own shaders** (Vulkan build), in a window or headless.
-- **Speed:** the level runs at the game's own 30 fps cap. Without the cap it does about 39 fps
-  standing and 34-38 fps walking. The in-engine cutscene after the credits course is the slow part
-  (16-20 fps). The limit is the game's SPU job code (translated to native code, but the job lane
-  the main thread waits on needs about 18 ms per frame while walking, more in that cutscene).
+- **Speed:** the level runs at the game's own 30 fps cap. Without the cap it does about 39-41 fps
+  standing and 36-38 fps walking. The in-engine cutscene after the credits course is the slow part
+  (20-23 fps). The limit is the game's SPU job code (translated to native code, but the job lane
+  the main thread waits on needs about 17 ms per frame while walking and 35 ms in that cutscene).
 - **Audio works internally:** the FMOD mixer and all its codec/effect plugins run as translated code
   and keep up in real time. These scripts never play it (see "Running").
 - **Known problems:**
@@ -137,7 +137,8 @@ Progress shows in the log as `[lbp2-local] t=Ns flips=N` and `init at: step N`.
 | `VK_DRAW_BATCH=1` | Vulkan build: records draws, uploads and clears into one GPU submission instead of waiting for the GPU after each draw; about 7.9 -> 12.3 fps in levels |
 
 Useful extras: `LBP2_NO_RASTER=1` (headless build without the software rasterizer, much
-faster), `GCM_SEMA_STATS=1`, `VK_BLACK_STATS=1`, `RSX_PRESENT_LOG=1`, `LBP2_CRASH_BT=1`.
+faster), `GCM_SEMA_STATS=1`, `VK_BLACK_STATS=1`, `RSX_PRESENT_LOG=1`, `LBP2_CRASH_BT=1`,
+`SPU_XR_FIX_STATS=10` (every 10 s, the SPU float ops that needed the exact slow path, by call site).
 For hunting stalls: `GCM_HITCH_MS=<n>` (frames slower than n ms), `SPU_TASK_SLOW_MS=<n>` (slow
 SPURS task rounds), `LBP2_FRAME_STALL_MS=<n>` (all guest threads when a frame stalls),
 `SPU_INTERP_STATS=10` (what SPU code runs interpreted).
