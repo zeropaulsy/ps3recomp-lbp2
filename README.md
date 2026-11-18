@@ -20,7 +20,7 @@ As of 2026-11-17:
 - **Speed:** the level runs at the game's own 30 fps cap. Without the cap it does about 39-41 fps
   standing and 36-38 fps walking. The in-engine cutscene after the credits course is the slow part
   (20-23 fps). The limit is the game's SPU job code (translated to native code, but the job lane
-  the main thread waits on needs about 17 ms per frame while walking and 35 ms in that cutscene).
+  the main thread waits on needs about 16 ms per frame while walking and 35 ms in that cutscene).
 - **Audio works internally:** the FMOD mixer and all its codec/effect plugins run as translated code
   and keep up in real time. These scripts never play it (see "Running").
 - **Known problems:**

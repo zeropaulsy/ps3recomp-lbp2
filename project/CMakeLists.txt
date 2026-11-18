@@ -77,6 +77,14 @@ message(STATUS "Lifted sources:  ${RECOMP_SOURCE_COUNT} file(s)")
 # different reason. add_subdirectory hands all of that over with the target.
 add_subdirectory("${PS3RECOMP_DIR}" "${CMAKE_BINARY_DIR}/ps3recomp_sdk"
                  EXCLUDE_FROM_ALL)
+# LBP2_RUNTIME_NO_SSP (experiment, default OFF): build the runtime library without the stack
+# protector the distribution compiler enables by default (-fstack-protector-strong). The SPU DMA
+# path (spu_wrch -> mfc_for -> mfc_do_transfer -> spu_overlay_note_get) is a chain of small
+# functions run per transfer, each paying the canary store and check.
+option(LBP2_RUNTIME_NO_SSP "Build the ps3recomp runtime without the stack protector" OFF)
+if(LBP2_RUNTIME_NO_SSP AND CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(ps3recomp_runtime PRIVATE -fno-stack-protector)
+endif()
 
 # ---------------------------------------------------------------------------
 # The HLE NID table
@@ -152,6 +160,32 @@ elseif(PORT_ENABLE_SPU)
     if(SPU_LIFTED)
         list(LENGTH SPU_LIFTED SPU_IMAGE_COUNT)
         message(STATUS "Lifted SPU:      ${SPU_IMAGE_COUNT} image(s)")
+        # LBP2_SPU_FAR_READS (experiment, default OFF): compile copies of the lifted sources in which
+        # reads of SPU registers written more than LBP2_SPU_FAR_K ops back load from ctx (fork
+        # tools/spu_far_reads.py, SPU_FAR in runtime/spu/spu_helpers.h) instead of GCC keeping those
+        # values in host registers and spilling them to the stack. The lift is untouched.
+        # 2026-11-18: -18% on a captured cutscene job function in a microbench, but in the game
+        # walk +-0 and cutscene MAIN only ~-2-3% (vs -3% walk from the byte-rotate tables alone).
+        option(LBP2_SPU_FAR_READS "Lifted SPU: read long-lived registers from ctx" OFF)
+        set(LBP2_SPU_FAR_K "8" CACHE STRING "Lifted SPU: write distance kept in host registers")
+        set(_spu_far_dirs "")
+        if(LBP2_SPU_FAR_READS)
+            find_package(Python3 COMPONENTS Interpreter REQUIRED)
+            set(_far_tool "${PS3RECOMP_DIR}/tools/spu_far_reads.py")
+            set(_far_srcs "")
+            foreach(_src IN LISTS SPU_LIFTED)
+                get_filename_component(_dir "${_src}" DIRECTORY)
+                get_filename_component(_img "${_dir}" NAME)
+                set(_out "${CMAKE_CURRENT_BINARY_DIR}/spu_far/${_img}/spu_recomp.c")
+                add_custom_command(OUTPUT "${_out}"
+                    COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/spu_far/${_img}"
+                    COMMAND "${Python3_EXECUTABLE}" "${_far_tool}" -k "${LBP2_SPU_FAR_K}" -o "${_out}" "${_src}"
+                    DEPENDS "${_src}" "${_far_tool}" VERBATIM)
+                list(APPEND _far_srcs "${_out}")
+                list(APPEND _spu_far_dirs "${_out}|${_dir}")   # its #include "spu_recomp.h"
+            endforeach()
+            set(SPU_LIFTED ${_far_srcs})
+        endif()
         # The musttail indirect-branch fast path. Excluded from the runtime
         # library on purpose (see the SDK root CMakeLists): it must be built
         # here, by clang, or the tail call degrades to a plain call and a guest
@@ -221,6 +255,12 @@ if(SPU_SOURCES)
     set_source_files_properties(${SPU_SOURCES} PROPERTIES
         INCLUDE_DIRECTORIES "${PS3RECOMP_DIR}/runtime/spu"
         COMPILE_DEFINITIONS SPU_USE_DISPATCH_MT)
+    foreach(_pair IN LISTS _spu_far_dirs)   # LBP2_SPU_FAR_READS copies: the lift's own directory
+        string(REPLACE "|" ";" _pair "${_pair}")
+        list(GET _pair 0 _out)
+        list(GET _pair 1 _dir)
+        set_property(SOURCE "${_out}" APPEND PROPERTY INCLUDE_DIRECTORIES "${_dir}")
+    endforeach()
     if(NOT MSVC OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         set(_spu_opts "-O2")
         # LBP2_SPU_AVX2=ON: the lifted SPU sources also get -mavx2, and -mfma when
