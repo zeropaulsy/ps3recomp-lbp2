@@ -311,6 +311,17 @@ if(SPU_SOURCES)
             list(APPEND _spu_opts ${_spu_extra})
         endif()
         set_source_files_properties(${SPU_SOURCES} PROPERTIES COMPILE_OPTIONS "${_spu_opts}")
+        # LBP2_SPU_LS_IN_CTX: the SPURS job modules (spu/jobmod_*) address the LS as the context's own
+        # ls_store (fork runtime/spu/spu_context.h, SPU_LS_IN_CTX), so GCC knows an LS store cannot
+        # overwrite ctx->gpr[] and keeps registers in host registers across it, even in functions
+        # whose ctx escapes into a call. Job modules only: a raw SPU's LS is the guest window, and
+        # job code always runs on a SPURS thread's context (ls == ls_store).
+        option(LBP2_SPU_LS_IN_CTX "Lifted SPURS job modules address the LS inside the context" OFF)
+        if(LBP2_SPU_LS_IN_CTX)
+            set(_spu_jobmods ${SPU_SOURCES})
+            list(FILTER _spu_jobmods INCLUDE REGEX "/jobmod_[^/]*/spu_recomp\\.c$")
+            set_property(SOURCE ${_spu_jobmods} APPEND PROPERTY COMPILE_DEFINITIONS SPU_LS_IN_CTX)
+        endif()
     endif()
 endif()
 
