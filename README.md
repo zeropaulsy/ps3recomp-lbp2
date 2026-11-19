@@ -122,6 +122,7 @@ Progress shows in the log as `[lbp2-local] t=Ns flips=N` and `init at: step N`.
 | `PAD_SCRIPT=25:0x4000,30:0x4000,35:0x4000` | Presses Cross for the game's two boot prompts |
 | `LBP2_SKIP_INTRO=1` | Pulses START from 38 s until the level starts, which skips the intro movie (never pauses the level) |
 | `LBP2_NO_MLAA=1` | Skips the Edge MLAA SPU pass: ~+20% fps, but no anti-aliasing and no glow halo. `LBP2_NO_MLAA=0` turns MLAA back on |
+| `LBP2_NO_RASTER=1` | Headless build only: skips the null backend's CPU rasterizer, whose output nobody sees (much faster). `LBP2_NO_RASTER=0` keeps it |
 | `LBP2_FIFO_SPIN_MAX=4` | Caps the game's RSX-backlog spin, which otherwise freezes ~0.5 s when the RSX has caught up (most often with `LBP2_NO_MLAA=1`) |
 | `LBP2_RSX_POLL_US=250` | The RSX thread sleeps 250 us between FIFO passes instead of 4 ms (range 50..4000); ~+11% fps walking the level |
 | `SPU_FLOAT_RZ=1` | Runs SPU code with the host in round-toward-zero, flush-to-zero mode, so single-precision SPU float ops are one native op each (same bits as the exact forms; ~+16% fps in levels) |
@@ -136,8 +137,7 @@ Progress shows in the log as `[lbp2-local] t=Ns flips=N` and `init at: step N`.
 | `SPU_MFC_LOOKUP_CACHE=1` | Per-thread cache of the SPU MFC engine lookup; about 19% faster in levels |
 | `VK_DRAW_BATCH=1` | Vulkan build: records draws, uploads and clears into one GPU submission instead of waiting for the GPU after each draw; about 7.9 -> 12.3 fps in levels |
 
-Useful extras: `LBP2_NO_RASTER=1` (headless build without the software rasterizer, much
-faster), `GCM_SEMA_STATS=1`, `VK_BLACK_STATS=1`, `RSX_PRESENT_LOG=1`, `LBP2_CRASH_BT=1`,
+Useful extras: `GCM_SEMA_STATS=1`, `VK_BLACK_STATS=1`, `RSX_PRESENT_LOG=1`, `LBP2_CRASH_BT=1`,
 `SPU_XR_FIX_STATS=10` (every 10 s, the SPU float ops that needed the exact slow path, by call site).
 For hunting stalls: `GCM_HITCH_MS=<n>` (frames slower than n ms), `SPU_TASK_SLOW_MS=<n>` (slow
 SPURS task rounds), `LBP2_FRAME_STALL_MS=<n>` (all guest threads when a frame stalls),

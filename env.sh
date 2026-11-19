@@ -31,8 +31,9 @@ if [ -z "$LBP2_NO_DEFAULT_ENV" ]; then
   : "${SPU_FLOAT_RZ=1}"                # SPU float ops run natively in round-toward-zero mode (bit-exact)
   : "${LBP2_RSX_POLL_US=250}"         # RSX FIFO poll 250 us, not 4 ms: walking the level +11% fps (no MLAA)
   : "${LBP2_NO_MLAA=1}"               # skip the Edge MLAA SPU pass: +20% fps, no AA/glow (=0 turns MLAA on)
+  : "${LBP2_NO_RASTER=1}"             # headless build only: skip the null backend's CPU rasterizer, nothing is shown (=0 keeps it)
   export PAD_SCRIPT LBP2_SKIP_INTRO SPU_INTERP_UNLIFTED SPU_DMA_REPEAT_EXEMPT SPU_WWS_PM_IMAGE GCM_USER_QUEUE \
          GCM_FIFO_SEGMENT GCM_SEMA_ACQUIRE GCM_SEMA_ACQUIRE_MS CELL_FIBER_RUN_RETURNS \
          PS3RECOMP_VK_GUEST_PROGRAMS SPU_MFC_LOOKUP_CACHE VK_DRAW_BATCH LBP2_FIFO_SPIN_MAX \
-         SPU_FLOAT_RZ LBP2_RSX_POLL_US LBP2_NO_MLAA
+         SPU_FLOAT_RZ LBP2_RSX_POLL_US LBP2_NO_MLAA LBP2_NO_RASTER
 fi
