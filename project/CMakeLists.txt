@@ -286,6 +286,13 @@ if(SPU_SOURCES)
         # The MFC parameter-channel writes (5-6 per DMA) become plain stores instead of calls
         # into spu_wrch (runtime/spu/spu_context.h, SPU_WRCH_INLINE).
         list(APPEND _spu_opts "-DSPU_WRCH_INLINE")
+        # GCC splits a u128 (TImode) into two 64-bit halves and then keeps some SPU registers as an
+        # xmm + GPR pair with a stack round trip in loops (a store-forwarding stall per iteration).
+        # -fno-split-wide-types keeps them whole: with the fork's x86 helper rewrites, MAIN lane
+        # -8% / +5.6% fps in LBP2's walk (this flag alone: -1.4% job-code cycles).
+        if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+            list(APPEND _spu_opts "-fno-split-wide-types")
+        endif()
         # The x86 SPU float ops assume round toward zero + FZ + DAZ (SPU_XR_ASSUME_RZ, fork
         # runtime/spu/spu_helpers.h): no per-op mode test and no round-to-nearest form beside each
         # op, a third less lifted SPU code; the runtime then sets that mode for every SPU run
