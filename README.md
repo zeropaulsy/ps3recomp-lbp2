@@ -36,7 +36,7 @@ As of 2026-11-17:
     about 43 s. `python3 tools/cachecheck.py` finds the damaged entry; move the file away and the game
     rebuilds it.
 
-<img width="1307" height="798" alt="Screenshot From 2026-11-17 18-32-30" src="https://github.com/user-attachments/assets/8e3645e4-cd0d-4ad1-a997-933b7bf20bfe" />
+<img width="1298" height="788" alt="Screenshot From 2026-11-20 23-39-54" src="https://github.com/user-attachments/assets/a285ddb2-d859-4ea4-8455-0fac7229eb04" />
 
 ## What is here
 
