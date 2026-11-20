@@ -310,6 +310,13 @@ if(SPU_SOURCES)
             list(APPEND _spu_opts "-DSPU_LS_NO_DIAG")
             set_source_files_properties(lbp2_local.cpp PROPERTIES COMPILE_DEFINITIONS LBP2_SPU_LS_NO_DIAG)
         endif()
+        # Lifted rdch goes through the runtime's spu_rdch_u32 and builds the register inline (fork
+        # spu_helpers.h, SPU_RDCH_U32): a u128 return comes back in rax:rdx, and its two 8-byte stores
+        # into ctx->gpr made the next vector read of that register a store-forwarding failure.
+        option(LBP2_SPU_RDCH_U32 "Lifted SPU rdch through spu_rdch_u32 (one 16-byte register store)" ON)
+        if(LBP2_SPU_RDCH_U32)
+            list(APPEND _spu_opts "-DSPU_RDCH_U32")
+        endif()
         # LBP2_SPU_EXTRA_FLAGS="...": more flags for the lifted SPU sources only (experiments:
         # -march=native, -O3, PGO). Empty by default.
         set(LBP2_SPU_EXTRA_FLAGS "" CACHE STRING "Extra compile flags for the lifted SPU sources")
