@@ -31,6 +31,10 @@ As of 2026-11-17:
   - The final image is drawn at 0.875 of the frame, with black bars. That scale comes from the
     game's own final composite pass; why is still unchecked.
   - Online features are stubbed (offline only).
+  - A hard reset of the PC while the game runs can damage its HDD cache
+    (`hdd1/cache/BCUS98245/output/temp`); the game then exits with a libpng `incorrect data check` at
+    about 43 s. `python3 tools/cachecheck.py` finds the damaged entry; move the file away and the game
+    rebuilds it.
 
 <img width="1307" height="798" alt="Screenshot From 2026-11-17 18-32-30" src="https://github.com/user-attachments/assets/8e3645e4-cd0d-4ad1-a997-933b7bf20bfe" />
 
@@ -44,7 +48,7 @@ As of 2026-11-17:
 | `run_frames.sh` | Same, saving a Vulkan frame every 5 s: `./run_frames.sh <seconds> <label> <new-dir>` |
 | `patch_stubs.py` | Post-lift fix for import stubs (see below) |
 | `gdb/` | `run_gdb.sh <seconds> <absolute script> <label>` and the probe scripts used during bring-up |
-| `tools/` | Small ELF helpers: `ppc_view.py ADDR:N`, `callers.py ADDR`, `tocref.py`, `opd.py`, `str.py` (need `capstone`) |
+| `tools/` | Small ELF helpers: `ppc_view.py ADDR:N`, `callers.py ADDR`, `tocref.py`, `opd.py`, `str.py` (need `capstone`); `cachecheck.py` checks the PNGs in the game's HDD cache |
 
 ## Building
 
