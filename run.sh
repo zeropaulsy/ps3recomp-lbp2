@@ -2,14 +2,16 @@
 # Run the LBP2 recomp silently, in private directories. usage: run.sh <seconds> [label]
 # BIN=<path> runs another build of the same game (e.g. build-vk/lbp2_recomp, the Vulkan backend).
 . "$(dirname "${BASH_SOURCE[0]}")/env.sh"   # sets W, LBP2_ELF and the game's runtime settings
-SECS=${1:-120}; LABEL=${2:-run}; LOG=$W/runs/$(date +%H%M%S)-$LABEL.log
+# LBP2_RUNS_DIR=<dir>: write the log there instead of runs/ (e.g. /dev/shm: the game then writes nothing
+# to the nearly-full ntfs-3g volume while it runs; the game's cwd stays runs/).
+SECS=${1:-120}; LABEL=${2:-run}; LOG=${LBP2_RUNS_DIR:-$W/runs}/$(date +%H%M%S)-$LABEL.log
 # Audio: SDL's dummy driver, and every real sound server made unreachable.
 export SDL_AUDIODRIVER=dummy
 export PULSE_SERVER=unix:/nonexistent/pulse PIPEWIRE_REMOTE=/nonexistent/pipewire ALSA_CONFIG_PATH=/dev/null JACK_NO_START_SERVER=1
 export XDG_RUNTIME_DIR=$W/empty-xdg
 export PS3_VFS_ROOT=$W/game PS3_HDD0_ROOT=$W/hdd0 PS3_HDD1_ROOT=$W/hdd1 PS3_DEV_FLASH=$W/dev_flash
 export PS3_TITLE=lbp2-recomp
-mkdir -p "$W/runs" "$W/empty-xdg"; cd "$W/runs" || exit 1
+mkdir -p "$W/runs" "${LBP2_RUNS_DIR:-$W/runs}" "$W/empty-xdg"; cd "$W/runs" || exit 1
 "${BIN:-$W/build/lbp2_recomp}" "$LBP2_ELF" > "$LOG" 2>&1 &
 PID=$!
 START=$SECONDS; MAXRSS=0; WHY=timeout

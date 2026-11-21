@@ -358,8 +358,60 @@ static void register_fmod_plugins(void) {
         spu_overlay_register_region_reloc(p.file_off + 0x10000u + 0x100u, p.span, 0x80u, p.image_id);
 }
 
+/* 13. LBP2_SCREEN_SIZE=<0..1> (default 0.5; "game" keeps the game's own value): the
+ *     display option "screen size" (the in-game Screen Size slider, script
+ *     Get/SetDisplayOptionScreenSize). The final composite draws the scene as a centred quad
+ *     scaled by powf(1.3, size - 0.5) (0x2BDDFC; 0.5 = exactly full screen, 0 = x0.877 with
+ *     black bars, 1 = x1.14 cropped). The game's display init (0x5DF918) zeroes the option
+ *     (current 0xD10D48, target 0xD10D4C) right before its cellVideoOutConfigure call
+ *     (LR 0x5DFC10), and a new profile copies the current value (ctor 0x171470, field
+ *     +0x458), so with no saved profile the game ran at 0: the picture filled only
+ *     x 79..1201, y 44..676 of the 1280x720 frame. Where a console gets a nonzero default is
+ *     unknown. The saved profile (hdd0/game/BCUS98245_USER1/USRDIR/bigfart1, made at the
+ *     first boot) holds 0 too and is applied at every boot (0x32D364 calls the setter
+ *     0x5DCCC8 with its value, LR 0x32D69C). So this sets both values after the display
+ *     init's call, which new profiles copy, and replaces the saved profile's value when it
+ *     is applied (linked with -Wl,--wrap=_Z13func_005DCCC8P11ppu_context; the lifted
+ *     stub 0x7A3210 that reaches the setter is in another object, so it goes through the
+ *     wrap). The in-game slider still works for the session (other LR), but its saved
+ *     value is replaced at the next boot unless LBP2_SCREEN_SIZE=game. */
+extern "C" int32_t cellVideoOutConfigure(uint32_t videoOut, void* config, void* option, uint32_t wait);
+static float g_screen_size = 0.5f;
+static bool g_screen_size_on;
+extern "C" void __real__Z13func_005DCCC8P11ppu_context(ppu_context* c);
+extern "C" void __wrap__Z13func_005DCCC8P11ppu_context(ppu_context* c) {
+    if (g_screen_size_on && (uint32_t)c->lr == 0x0032D69Cu) {
+        fprintf(stderr, "[lbp2-local] LBP2_SCREEN_SIZE: saved profile's screen size %.3f -> %.3f\n",
+                c->fpr[1], (double)g_screen_size);
+        c->fpr[1] = (double)g_screen_size;
+    }
+    __real__Z13func_005DCCC8P11ppu_context(c);
+}
+static void video_out_configure(ppu_context* c) {
+    ret(c, cellVideoOutConfigure((uint32_t)c->gpr[3], (void*)(uintptr_t)(uint32_t)c->gpr[4],
+                                 (void*)(uintptr_t)(uint32_t)c->gpr[5], (uint32_t)c->gpr[6]));
+    if ((uint32_t)c->lr != 0x005DFC10u) return;
+    uint32_t bits;
+    memcpy(&bits, &g_screen_size, 4);
+    wr32(0xD10D48u, bits);
+    wr32(0xD10D4Cu, bits);
+    fprintf(stderr, "[lbp2-local] LBP2_SCREEN_SIZE: display option screen size set to %.3f\n",
+            (double)g_screen_size);
+}
+
 extern "C" void __wrap_ppu_sysprx_register(void) {
     register_fmod_plugins();
+    {
+        const char* e = getenv("LBP2_SCREEN_SIZE");
+        if (!e || strcmp(e, "game")) {
+            if (e && *e) g_screen_size = strtof(e, nullptr);
+            if (!(g_screen_size >= 0.0f)) g_screen_size = 0.0f;   /* also NaN */
+            if (g_screen_size > 1.0f) g_screen_size = 1.0f;
+            g_screen_size_on = true;
+            ps3_hle_register_ctx(0x0BAE8772u, "cellVideoOutConfigure (lbp2: LBP2_SCREEN_SIZE)",
+                                 video_out_configure);
+        }
+    }
     { const char* e = getenv("LBP2_SKIP_INTRO"); g_skip_intro = e && *e == '1'; }
     if (g_skip_intro)
         ps3_hle_register_ctx(0x8B72CDA1u, "cellPadGetData (lbp2: LBP2_SKIP_INTRO)", pad_get_data);

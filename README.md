@@ -11,7 +11,7 @@ decrypt and lift it yourself.
 
 ## Status
 
-As of 2026-11-17:
+As of 2026-11-21:
 
 - **Boots reliably** through all 73 init steps (about 5 s), skips the intro movie, and reaches the
   opening credits level at about 40 s. The level can be walked through with scripted controller
@@ -28,8 +28,12 @@ As of 2026-11-17:
     second take 40-100 ms instead of 33.
   - MLAA anti-aliasing is off by default for speed (`LBP2_NO_MLAA=1`), which also removes the
     glow halo.
-  - The final image is drawn at 0.875 of the frame, with black bars. That scale comes from the
-    game's own final composite pass; why is still unchecked.
+  - A 7-pixel black band at the top and bottom of the frame (in the game's scene image; source
+    unchecked). The larger black bars on all four sides (the image drawn at 0.877 of the frame)
+    are fixed by `LBP2_SCREEN_SIZE`, see "Runtime settings".
+  - The transition into the second level (Avalon) froze once in five runs (the RSX gave up
+    waiting on a label the SPU jobs write, then the SPU job lanes were halted by the runtime's
+    repeat watchdog). Not reproduced since.
   - Online features are stubbed (offline only).
   - A hard reset of the PC while the game runs can damage its HDD cache
     (`hdd1/cache/BCUS98245/output/temp`); the game then exits with a libpng `incorrect data check` at
@@ -42,9 +46,9 @@ As of 2026-11-17:
 
 | Path | What |
 |------|------|
-| `project/` | The game project: `CMakeLists.txt`, `main.cpp`, `stubs.cpp`, and `lbp2_local.cpp` (game-specific shims: offline `cellNetCtlGetState`, a UDP loopback for the game's party code, intro skip, MLAA skip, registration of the FMOD plugins as relocatable SPU code, init-step logging and stall dumps, `LBP2_NO_RASTER`, `LBP2_CRASH_BT`) |
+| `project/` | The game project: `CMakeLists.txt`, `main.cpp`, `stubs.cpp`, and `lbp2_local.cpp` (game-specific shims: offline `cellNetCtlGetState`, a UDP loopback for the game's party code, intro skip, MLAA skip, the Screen Size option (`LBP2_SCREEN_SIZE`), registration of the FMOD plugins as relocatable SPU code, init-step logging and stall dumps, `LBP2_NO_RASTER`, `LBP2_CRASH_BT`) |
 | `env.sh` | Workspace paths and the runtime settings LBP2 needs; sourced by the scripts |
-| `run.sh` | Silent launcher: `./run.sh <seconds> [label]`, log in `runs/` |
+| `run.sh` | Silent launcher: `./run.sh <seconds> [label]`, log in `runs/` (or in `$LBP2_RUNS_DIR`) |
 | `run_frames.sh` | Same, saving a Vulkan frame every 5 s: `./run_frames.sh <seconds> <label> <new-dir>` |
 | `patch_stubs.py` | Post-lift fix for import stubs (see below) |
 | `gdb/` | `run_gdb.sh <seconds> <absolute script> <label>` and the probe scripts used during bring-up |
@@ -98,6 +102,9 @@ As of 2026-11-17:
    The lifted SPU code is built with `-mavx2` (and `-mfma` if present) when the configuring
    machine has AVX2 (faster SPU float ops); the binary then needs the same CPU features.
    `-DLBP2_SPU_AVX2=OFF` builds one without them, `-DLBP2_SPU_FMA=OFF` drops only `-mfma`.
+   The lifted SPU code is also built with `-fcf-protection=none` (no `endbr64` at the start of
+   every function, about 0.6% faster job code); the binary then loses its IBT/shadow-stack marking.
+   `-DLBP2_SPU_CF_PROTECTION=ON` keeps the compiler's default.
 
 ## Running
 
@@ -115,6 +122,11 @@ Esc quits). Controller input is scripted: `PAD_SCRIPT=<sec>:<buttons>,...` press
 `PAD_STICK` moves the left stick (format in the runtime's `libs/input/cellPad.c`).
 
 Progress shows in the log as `[lbp2-local] t=Ns flips=N` and `init at: step N`.
+
+`LBP2_RUNS_DIR=<dir>` puts the log somewhere else (the game's working directory stays `runs/`).
+The game logs a lot (over 100 MB in a few minutes with some debug settings); on a slow or nearly
+full disk the writes stall the game for seconds at a time, so for timing runs use a RAM disk such
+as `LBP2_RUNS_DIR=/dev/shm/lbp2-runs`.
 
 ### Runtime settings
 
@@ -140,6 +152,14 @@ Progress shows in the log as `[lbp2-local] t=Ns flips=N` and `init at: step N`.
 | `PS3RECOMP_VK_GUEST_PROGRAMS=1` | Vulkan build: use the game's shaders |
 | `SPU_MFC_LOOKUP_CACHE=1` | Per-thread cache of the SPU MFC engine lookup; about 19% faster in levels |
 | `VK_DRAW_BATCH=1` | Vulkan build: records draws, uploads and clears into one GPU submission instead of waiting for the GPU after each draw; about 7.9 -> 12.3 fps in levels |
+
+Not set by `env.sh` (the defaults below are built in):
+
+| Variable | Why |
+|----------|-----|
+| `LBP2_SCREEN_SIZE=0.5` (default) | The game's Screen Size display option. The final image is scaled by 1.3^(size - 0.5), so 0.5 fills the frame exactly. The game starts new profiles at 0 (black bars on all four sides) and saves that, so this value replaces it at boot and when the saved profile is applied. The in-game slider still works until the next boot. `LBP2_SCREEN_SIZE=game` keeps the game's own value |
+| `LBP2_VBLANK_MS=16` (default) | Period of the emulated vblank in ms (project/main.cpp). The game flips every second vblank, so the frame cap is 1000 / (2 * period): 16 gives 31.25 fps, `16.667` gives 30.0 fps as on hardware (fractions are accepted). Smaller values are only for measuring headroom: game timing that counts vblanks runs fast |
+| `PS3RECOMP_VK_PRESENT=immediate` | Vulkan window only (`fifo`, `mailbox`, `immediate`, `relaxed`; default mailbox, else fifo). This NVIDIA/XWayland setup offers no mailbox, and under fifo a hidden window, locked screen or switched-off display holds each present ~1 s, so the game runs at ~1 fps. `immediate` never waits |
 
 Useful extras: `GCM_SEMA_STATS=1`, `VK_BLACK_STATS=1`, `RSX_PRESENT_LOG=1`, `LBP2_CRASH_BT=1`,
 `SPU_XR_FIX_STATS=10` (every 10 s, the SPU float ops that needed the exact slow path, by call site).

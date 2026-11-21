@@ -207,7 +207,7 @@ static DWORD WINAPI frame_clock(LPVOID)
             rsx_ok ? "OK -- window open" : "FAILED");
 
     unsigned  last_flip = 0;
-    ULONGLONG next_tick = GetTickCount64();
+    ULONGLONG next_tick = GetTickCount64() * 1000ull;   /* microseconds */
 
     /* LBP2_RSX_POLL_US: how long this thread sleeps between FIFO passes
      * (default 4000). A pass that finds the FIFO empty, or parks on a
@@ -221,11 +221,13 @@ static DWORD WINAPI frame_clock(LPVOID)
       if (e && *e) { long v = strtol(e, NULL, 10); if (v >= 50 && v <= 4000) poll_us = (unsigned)v; } }
     ULONGLONG last_pump = 0;
     /* LBP2_VBLANK_MS: vblank tick period (default 16, ~60 Hz). The game flips every
-     * second vblank, so this caps it at 1000 / (2 * period) fps. Smaller values are
-     * for measuring headroom only: game timing that counts vblanks runs fast. */
-    unsigned vblank_ms = 16;
+     * second vblank, so this caps it at 1000 / (2 * period) fps. Fractions work
+     * (16.667 = a 30.0 fps cap, as on hardware); the clock keeps microseconds.
+     * Smaller values are for measuring headroom only: game timing that counts
+     * vblanks runs fast. */
+    unsigned vblank_us = 16000;
     { const char* e = getenv("LBP2_VBLANK_MS");
-      if (e && *e) { long v = strtol(e, NULL, 10); if (v >= 1 && v <= 100) vblank_ms = (unsigned)v; } }
+      if (e && *e) { double v = strtod(e, NULL); if (v >= 1.0 && v <= 100.0) vblank_us = (unsigned)(v * 1000.0 + 0.5); } }
 
     for (;;) {
 #ifdef _WIN32
@@ -235,9 +237,10 @@ static DWORD WINAPI frame_clock(LPVOID)
         else { struct timespec d = { 0, (long)poll_us * 1000L }; nanosleep(&d, NULL); }
 #endif
         ULONGLONG now = GetTickCount64();
+        ULONGLONG now_us = now * 1000ull;
 
         int fired = 0;
-        while ((long long)(now - next_tick) >= 0 && fired < 240) {
+        while ((long long)(now_us - next_tick) >= 0 && fired < 240) {
             cellGcmTickVBlank();
             cellGcmTickFlip();
             /* Present a pending flip BEFORE draining any further. The flip
@@ -253,10 +256,10 @@ static DWORD WINAPI frame_clock(LPVOID)
              * labels the game's per-frame logic blocks on, so it has to keep
              * advancing at 60 Hz even while present() throttles. */
             if (rsx_ok) cellGcm_rsx_process_fifo();
-            next_tick += vblank_ms;      /* ~60 Hz by default */
+            next_tick += vblank_us;      /* ~60 Hz by default */
             fired++;
         }
-        if (fired >= 240) next_tick = now;   /* fell too far behind -- resync */
+        if (fired >= 240) next_tick = now_us;   /* fell too far behind -- resync */
 
         /* Drain at the outer cadence too, not only on the 16 ms tick: titles
          * fence every render pass on a label the drain writes, and one wave of

@@ -293,6 +293,18 @@ if(SPU_SOURCES)
         if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
             list(APPEND _spu_opts "-fno-split-wide-types")
         endif()
+        # No endbr64 at the start of every lifted SPU function (distro compilers default to
+        # -fcf-protection=full): 1.8% of job-code samples sat on it. Job code -0.6% cycles, -1%
+        # instructions (2026-11-21, 4 paired runs). The binary then loses its IBT/SHSTK property,
+        # which nothing enforces for this process. -DLBP2_SPU_CF_PROTECTION=ON keeps the default.
+        option(LBP2_SPU_CF_PROTECTION "Keep the compiler's default -fcf-protection for lifted SPU code" OFF)
+        if(NOT LBP2_SPU_CF_PROTECTION)
+            include(CheckCCompilerFlag)
+            check_c_compiler_flag("-fcf-protection=none" LBP2_HAVE_FCF_NONE)
+            if(LBP2_HAVE_FCF_NONE)
+                list(APPEND _spu_opts "-fcf-protection=none")
+            endif()
+        endif()
         # The x86 SPU float ops assume round toward zero + FZ + DAZ (SPU_XR_ASSUME_RZ, fork
         # runtime/spu/spu_helpers.h): no per-op mode test and no round-to-nearest form beside each
         # op, a third less lifted SPU code; the runtime then sets that mode for every SPU run
@@ -488,4 +500,4 @@ if(APPLE)
 endif()
 
 # LBP2 shims: see lbp2_local.cpp
-target_link_options(${PROJECT_NAME} PRIVATE -Wl,--wrap=cellNetCtlGetState -Wl,--wrap=ppu_sysprx_register -Wl,--wrap=rsx_null_backend_init -Wl,--wrap=lv2_syscall -Wl,--wrap=ppu_prof_stamp)
+target_link_options(${PROJECT_NAME} PRIVATE -Wl,--wrap=cellNetCtlGetState -Wl,--wrap=ppu_sysprx_register -Wl,--wrap=rsx_null_backend_init -Wl,--wrap=lv2_syscall -Wl,--wrap=ppu_prof_stamp -Wl,--wrap=_Z13func_005DCCC8P11ppu_context)
