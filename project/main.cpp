@@ -45,6 +45,9 @@
 
 #ifndef _WIN32
 #include <sys/mman.h>   /* mmap: the guest arena, see alloc_guest_vm */
+#include <pthread.h>    /* the vblank thread (LBP2_VBLANK_THREAD) */
+#include <time.h>
+#include <errno.h>
 #endif
 
 #if defined(__APPLE__)
@@ -189,13 +192,54 @@ extern "C" unsigned ppu_boot_frames_presented(void)
     return (unsigned)g_frames_presented;
 }
 
+extern "C" int  gcm_hitch_on(void);
+extern "C" void gcm_hitch_note(unsigned slot, unsigned long long ns);
+extern "C" void gcm_hitch_note_max(unsigned slot, unsigned long long ns);
+extern "C" unsigned long long gcm_hitch_now_ns(void);
+
 static void present_guest_frame(void)
 {
+    const unsigned long long hd0 = gcm_hitch_on() ? gcm_hitch_now_ns() : 0;
     rsx_backend_present();
+    if (hd0) gcm_hitch_note(2, gcm_hitch_now_ns() - hd0);
     /* This thread increments and guest threads read, so interlocked rather
      * than a volatile ++, which on arm64 is neither atomic nor a fence. */
     InterlockedIncrement(&g_frames_presented);
 }
+
+/* LBP2_VBLANK_THREAD (default 1; 0 = tick from the frame clock loop, as
+ * before): vblank ticks come from a thread of their own on an absolute
+ * CLOCK_MONOTONIC schedule. On the frame clock thread a tick waited for
+ * whatever that thread was doing, and it spends most of a frame draining the
+ * FIFO (recording the Vulkan draws, 13-20 ms a frame while walking) and
+ * presenting (3-4 ms): ticks fired up to 16 ms late, in a sawtooth against
+ * the frame. LBP2's vblank handler writes the label its flip waits on every
+ * second vblank, so a late tick was a late flip. The ticks only advance
+ * counters and mark handlers pending (cellGcmTickFlip takes its own lock);
+ * the guest handlers still run at the next pump. */
+#ifndef _WIN32
+static unsigned g_vblank_us = 16000;
+static void* vblank_thread(void*)
+{
+    struct timespec next;
+    clock_gettime(CLOCK_MONOTONIC, &next);
+    for (;;) {
+        next.tv_nsec += (long)g_vblank_us * 1000L;
+        while (next.tv_nsec >= 1000000000L) { next.tv_nsec -= 1000000000L; next.tv_sec++; }
+        while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL) == EINTR) {}
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        const long long late_ns = (long long)(now.tv_sec - next.tv_sec) * 1000000000LL + (now.tv_nsec - next.tv_nsec);
+        /* More than 240 vblanks behind (a stopped process): start over from
+         * now rather than replay them. */
+        if (late_ns > 240LL * g_vblank_us * 1000LL) next = now;
+        if (gcm_hitch_on() && late_ns > 0) gcm_hitch_note_max(3, (unsigned long long)late_ns);
+        cellGcmTickVBlank();
+        cellGcmTickFlip();
+    }
+    return NULL;
+}
+#endif
 
 static DWORD WINAPI frame_clock(LPVOID)
 {
@@ -220,14 +264,27 @@ static DWORD WINAPI frame_clock(LPVOID)
     { const char* e = getenv("LBP2_RSX_POLL_US");
       if (e && *e) { long v = strtol(e, NULL, 10); if (v >= 50 && v <= 4000) poll_us = (unsigned)v; } }
     ULONGLONG last_pump = 0;
-    /* LBP2_VBLANK_MS: vblank tick period (default 16, ~60 Hz). The game flips every
-     * second vblank, so this caps it at 1000 / (2 * period) fps. Fractions work
-     * (16.667 = a 30.0 fps cap, as on hardware); the clock keeps microseconds.
-     * Smaller values are for measuring headroom only: game timing that counts
-     * vblanks runs fast. */
-    unsigned vblank_us = 16000;
+    /* LBP2_VBLANK_MS: vblank tick period (default 16.683 = 59.94 Hz, the PS3's
+     * 720p rate). The game flips every second vblank, so this caps it at
+     * 1000 / (2 * period) fps: 29.97 by default. Fractions work; the clock keeps
+     * microseconds. The old default, 16 (31.25 fps), could not line up with a
+     * ~60 Hz monitor: about one frame a second was dropped or shown twice in
+     * the window. Smaller values are for measuring headroom only: game timing
+     * that counts vblanks runs fast. */
+    unsigned vblank_us = 16683;
     { const char* e = getenv("LBP2_VBLANK_MS");
       if (e && *e) { double v = strtod(e, NULL); if (v >= 1.0 && v <= 100.0) vblank_us = (unsigned)(v * 1000.0 + 0.5); } }
+    int vblank_thread_on = 0;
+#ifndef _WIN32
+    { const char* e = getenv("LBP2_VBLANK_THREAD");
+      if (!(e && *e == '0')) {
+          g_vblank_us = vblank_us;
+          pthread_t t;
+          if (pthread_create(&t, NULL, vblank_thread, NULL) == 0) { pthread_detach(t); vblank_thread_on = 1; }
+          fprintf(stderr, "[lbp2] vblank ticks on their own thread: %s (LBP2_VBLANK_THREAD)\n",
+                  vblank_thread_on ? "on" : "FAILED, using the frame clock");
+      } }
+#endif
 
     for (;;) {
 #ifdef _WIN32
@@ -240,7 +297,9 @@ static DWORD WINAPI frame_clock(LPVOID)
         ULONGLONG now_us = now * 1000ull;
 
         int fired = 0;
+        if (vblank_thread_on) next_tick = now_us + vblank_us;   /* the loop below never fires */
         while ((long long)(now_us - next_tick) >= 0 && fired < 240) {
+            if (gcm_hitch_on()) gcm_hitch_note_max(3, (now_us - next_tick) * 1000ull);
             cellGcmTickVBlank();
             cellGcmTickFlip();
             /* Present a pending flip BEFORE draining any further. The flip
@@ -255,7 +314,11 @@ static DWORD WINAPI frame_clock(LPVOID)
             /* Drain the FIFO every tick. This is what writes the RSX sync-fence
              * labels the game's per-frame logic blocks on, so it has to keep
              * advancing at 60 Hz even while present() throttles. */
-            if (rsx_ok) cellGcm_rsx_process_fifo();
+            if (rsx_ok) {
+                const unsigned long long f0 = gcm_hitch_on() ? gcm_hitch_now_ns() : 0;
+                cellGcm_rsx_process_fifo();
+                if (f0) gcm_hitch_note(5, gcm_hitch_now_ns() - f0);
+            }
             next_tick += vblank_us;      /* ~60 Hz by default */
             fired++;
         }
@@ -270,7 +333,9 @@ static DWORD WINAPI frame_clock(LPVOID)
                 present_guest_frame();
                 last_flip = cellGcm_flip_request_count();
             }
-            cellGcm_rsx_process_fifo();
+            { const unsigned long long f0 = gcm_hitch_on() ? gcm_hitch_now_ns() : 0;
+              cellGcm_rsx_process_fifo();
+              if (f0) gcm_hitch_note(5, gcm_hitch_now_ns() - f0); }
 
             const int pump_due = poll_us >= 4000 || now - last_pump >= 4;
             if (pump_due) last_pump = now;
@@ -286,6 +351,11 @@ static DWORD WINAPI frame_clock(LPVOID)
              * present freely, so the window is not blank during boot. */
             unsigned fc = cellGcm_flip_request_count();
             if (fc != last_flip) {
+                /* The drain just reached this flip and set the pending flag
+                 * too: clear it, or the next pass presented the same frame a
+                 * second time (2 presents per flip, ~3 ms each on this thread,
+                 * the GPU wait and readback included). */
+                (void)cellGcm_take_flip_pending();
                 present_guest_frame();
                 last_flip = fc;
             } else if (fc == 0 && pump_due) {

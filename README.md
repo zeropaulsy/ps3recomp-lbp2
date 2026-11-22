@@ -17,15 +17,16 @@ As of 2026-11-22:
   opening credits level at about 40 s. The level can be walked through with scripted controller
   input; the cutscene after it plays, and the next level (Avalon) loads (20 of 20 test runs).
 - **Renders correctly with the game's own shaders** (Vulkan build), in a window or headless.
-- **Speed:** the level runs at the game's own 30 fps cap. Without the cap it does about 39-41 fps
+- **Speed:** the level runs at the game's own 30 fps cap, evenly paced: in a 100 s walk 99% of
+  frames take 33-34 ms (with the shader cache warm, see `PS3RECOMP_SPIRV_CACHE`). Without the cap it does about 39-41 fps
   standing and 36-38 fps walking. The in-engine cutscene after the credits course is the slow part
   (20-23 fps). The limit is the game's SPU job code (translated to native code, but the job lane
   the main thread waits on needs about 16 ms per frame while walking and 35 ms in that cutscene).
 - **Audio works internally:** the FMOD mixer and all its codec/effect plugins run as translated code
   and keep up in real time. These scripts never play it (see "Running").
 - **Known problems:**
-  - An occasional long frame remains (one or two a minute, 100-150 ms), and about 3 frames a
-    second take 40-100 ms instead of 33.
+  - The first time a new material appears, translating its shaders holds the frame for 20-90 ms.
+    Translated shaders are kept on disk (`cache/spirv`), so each happens once.
   - MLAA anti-aliasing is off by default for speed (`LBP2_NO_MLAA=1`), which also removes the
     glow halo.
   - A 7-pixel black band at the top and bottom of the frame (in the game's scene image; source
@@ -139,6 +140,7 @@ as `LBP2_RUNS_DIR=/dev/shm/lbp2-runs`.
 | `LBP2_FIFO_SPIN_MAX=4` | Caps the game's RSX-backlog spin, which otherwise freezes ~0.5 s when the RSX has caught up (most often with `LBP2_NO_MLAA=1`) |
 | `LBP2_RSX_POLL_US=250` | The RSX thread sleeps 250 us between FIFO passes instead of 4 ms (range 50..4000); ~+11% fps walking the level |
 | `SPU_FLOAT_RZ=1` | Runs SPU code with the host in round-toward-zero, flush-to-zero mode, so single-precision SPU float ops are one native op each (same bits as the exact forms; ~+16% fps in levels) |
+| `PS3RECOMP_SPIRV_CACHE=cache/spirv` | Vulkan build: keeps every translated shader on disk. A shader the game has not used before costs the RSX thread 10-14 ms to translate (HLSL to SPIR-V with glslang), which made most of the remaining 40-100 ms frames; with the cache each shader is translated once, ever (~16 MB after the first level). `=` (empty) turns it off |
 | `SPU_DMA_DEFER=1` | An SPU GET (main memory to local store) prefetches its source and is copied at the SPU's next channel operation (tag wait, PUT, any read, stop), so the cache misses of several GETs overlap instead of coming one after another. A program may only read a GET's destination after a tag wait, so it cannot tell. MAIN lane -2.5%, ~+1.4% fps in the credits level. `=0` copies at issue |
 | `SPU_INTERP_UNLIFTED=1` | Interprets SPU code loaded at run time that has no translation (the FMOD plugins have one, see "Building" step 5) |
 | `SPU_DMA_REPEAT_EXEMPT=8` | SPU image 8 waits on a control block between frames; the repeat watchdog must not halt it |
@@ -156,13 +158,19 @@ Not set by `env.sh` (the defaults below are built in):
 | Variable | Why |
 |----------|-----|
 | `LBP2_SCREEN_SIZE=0.5` (default) | The game's Screen Size display option. The final image is scaled by 1.3^(size - 0.5), so 0.5 fills the frame exactly. The game starts new profiles at 0 (black bars on all four sides) and saves that, so this value replaces it at boot and when the saved profile is applied. The in-game slider still works until the next boot. `LBP2_SCREEN_SIZE=game` keeps the game's own value |
-| `LBP2_VBLANK_MS=16` (default) | Period of the emulated vblank in ms (project/main.cpp). The game flips every second vblank, so the frame cap is 1000 / (2 * period): 16 gives 31.25 fps, `16.667` gives 30.0 fps as on hardware (fractions are accepted). Smaller values are only for measuring headroom: game timing that counts vblanks runs fast |
+| `LBP2_VBLANK_MS=16.683` (default) | Period of the emulated vblank in ms (project/main.cpp). The game flips every second vblank, so the frame cap is 1000 / (2 * period): the default (59.94 Hz, the PS3's 720p rate) gives 29.97 fps. Fractions are accepted. The old default, 16 (31.25 fps), could not line up with a ~60 Hz monitor, so about one frame a second was skipped or shown twice in the window. Smaller values are only for measuring headroom: game timing that counts vblanks runs fast |
+| `LBP2_VBLANK_THREAD=1` (default) | The vblank ticks come from a thread of their own, on an absolute clock. They used to come from the thread that also drains the command FIFO and presents, and fired up to 16 ms late behind that work. The game's vblank handler releases each flip every second vblank, so a late tick was a late frame (about 2 a second of 40-55 ms). `0` ticks from the frame loop as before |
+| `GCM_VBLANK_EACH=4` (default) | The game's vblank handler is called once per vblank (at most 4 owed calls at a time). Two ticks that arrived before the handler ran used to merge into one call, so the game's 2-vblank countdown lost a vblank (4% of them) and the frame took 50 ms. `0` merges them as before |
+| `PS3RECOMP_VK_PRESENT_THREAD=1` (default) | Vulkan window only: the window is drawn and presented on a thread of its own. The frame thread copies each finished frame into a staging image and moves on, so waiting for the display (vsync) never holds the game back. A frame that arrives while the previous one still waits replaces it. `0` presents on the frame thread as before |
 | `LBP2_ARM_ORDER=1` (default) | Each frame the game arms a gate in front of a batch of SPU jobs, but publishes the gate's barrier to the SPUs a few instructions before closing it. The emulated SPUs can slip through that gap, run jobs before their dependency counters are set, and leave the counters stuck: the game freezes or stalls 2 s (seen at the Avalon transition, about 1 run in 5). This closes the gate first. `0` keeps the game's own order |
-| `PS3RECOMP_VK_PRESENT=immediate` | Vulkan window only (`fifo`, `mailbox`, `immediate`, `relaxed`; default mailbox, else fifo). This NVIDIA/XWayland setup offers no mailbox, and under fifo a hidden window, locked screen or switched-off display holds each present ~1 s, so the game runs at ~1 fps. `immediate` never waits |
+| `PS3RECOMP_VK_PRESENT=fifo` | Vulkan window only (`fifo`, `mailbox`, `immediate`, `relaxed`; default mailbox, else fifo, so fifo on this NVIDIA/XWayland setup). With the present thread (above), fifo (vsync, no tearing) no longer slows the game: a windowed walk holds 29.97 fps with every frame shown. Without the present thread, fifo cost the frame thread 12-15 ms a frame, and a hidden window, locked screen or switched-off display held each present ~1 s (the game ran at ~1 fps); `immediate` never waits but tears |
 
 Useful extras: `GCM_SEMA_STATS=1`, `VK_BLACK_STATS=1`, `RSX_PRESENT_LOG=1`, `LBP2_CRASH_BT=1`,
 `SPU_XR_FIX_STATS=10` (every 10 s, the SPU float ops that needed the exact slow path, by call site).
-For hunting stalls: `GCM_HITCH_MS=<n>` (frames slower than n ms), `SPU_TASK_SLOW_MS=<n>` (slow
+For hunting stalls: `GCM_HITCH_MS=<n>` (frames slower than n ms, each with what its interval held:
+shader translations `xl`, pipeline creations `pl`, presents `pr`, vblank tick lateness `late`, tick to
+handler delay `hdly`, FIFO drain time `fifo`, and the semaphore waits `acq label@start-end ms`;
+`0` prints every frame), `PS3RECOMP_VK_PT_STATS=1` (window frames shown and replaced, every 10 s), `SPU_TASK_SLOW_MS=<n>` (slow
 SPURS task rounds), `LBP2_FRAME_STALL_MS=<n>` (all guest threads, RSX labels, SPURS lanes and the job list when a frame stalls),
 `SPU_INTERP_STATS=10` (what SPU code runs interpreted).
 
