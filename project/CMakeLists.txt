@@ -500,4 +500,4 @@ if(APPLE)
 endif()
 
 # LBP2 shims: see lbp2_local.cpp
-target_link_options(${PROJECT_NAME} PRIVATE -Wl,--wrap=cellNetCtlGetState -Wl,--wrap=ppu_sysprx_register -Wl,--wrap=rsx_null_backend_init -Wl,--wrap=lv2_syscall -Wl,--wrap=ppu_prof_stamp -Wl,--wrap=_Z13func_005DCCC8P11ppu_context)
+target_link_options(${PROJECT_NAME} PRIVATE -Wl,--wrap=cellNetCtlGetState -Wl,--wrap=ppu_sysprx_register -Wl,--wrap=rsx_null_backend_init -Wl,--wrap=lv2_syscall -Wl,--wrap=ppu_prof_stamp -Wl,--wrap=_Z13func_005DCCC8P11ppu_context -Wl,--wrap=_Z13func_005E8E88P11ppu_context -Wl,--wrap=_Z13func_005EBBC8P11ppu_context)

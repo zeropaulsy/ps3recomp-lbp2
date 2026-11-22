@@ -45,6 +45,66 @@ static ppu_context* volatile g_stall_ctx[65];
 static volatile uint32_t g_stall_lr[65];
 static void stall_dump(unsigned t, const char* cur);
 
+/* 2d. Event ring for the stall dump (opt-in, LBP2_EVRING=1): a thread polls the per-frame job
+ *     gates g1/g2 (u16 at *(TOC2+0x2F98) + g*0x404 + 4) and the post-effect labels every 100 us and
+ *     records each change in memory; the GCM retire hook (#13) records every user command with the
+ *     gate state it found. Nothing is printed until a stall, but the poll thread alone made the freeze vanish (0 in 19 runs vs ~1 in 5). */
+struct EvRec { uint64_t us; uint32_t kind, a, b; };   /* kind 1 mem change, 2 user command */
+static EvRec g_ev[1024];
+static volatile uint32_t g_ev_n;
+static bool g_ev_on;
+static uint64_t ev_now_us() {
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
+}
+static void ev_add(uint32_t kind, uint32_t a, uint32_t b) {
+    const uint32_t i = __atomic_fetch_add(&g_ev_n, 1u, __ATOMIC_RELAXED) & 1023u;
+    g_ev[i] = EvRec{ ev_now_us(), kind, a, b };
+}
+static void* ev_poll(void*) {
+    static const uint32_t labels[8] = { 0x41, 0x42, 0x43, 0x44, 0x45, 0x4E, 0x4F, 0x50 };
+    uint32_t last[10] = {}; bool init = false;
+    while (!__atomic_load_n(&vm_base, __ATOMIC_ACQUIRE)) usleep(100000);   /* started before guest memory exists */
+    sleep(5);
+    for (;;) {
+        usleep(100);
+        const uint32_t gb = be32(0xC75A98u + 0x2F98u);
+        if (gb < 0x10000u || gb >= 0x40000000u) continue;
+        uint32_t cur[10];
+        cur[0] = (uint32_t)vm_base[gb + 0x404 + 4] << 8 | vm_base[gb + 0x404 + 5];
+        cur[1] = (uint32_t)vm_base[gb + 0x808 + 4] << 8 | vm_base[gb + 0x808 + 5];
+        for (int k = 0; k < 8; k++) cur[2 + k] = be32(0x20000000u + labels[k] * 16u);
+        for (int k = 0; k < 10 && init; k++)
+            if (cur[k] != last[k]) ev_add(1, k < 2 ? (uint32_t)(k + 1) : 0x100u | labels[k - 2], last[k] << 16 | (cur[k] & 0xFFFF));
+        for (int k = 0; k < 10; k++) last[k] = cur[k];
+        init = true;
+    }
+    return nullptr;
+}
+static void ev_dump() {
+    const uint32_t n = g_ev_n, cnt = n < 160u ? n : 160u;
+    if (!cnt) return;
+    const uint64_t t_end = g_ev[(n - 1) & 1023u].us;
+    fprintf(stderr, "[lbp2-stall] last %u events (ms before the newest; g1/g2 = gate count, L = label):\n", cnt);
+    for (uint32_t j = n - cnt; j != n; j++) {
+        const EvRec& e = g_ev[j & 1023u];
+        const double ms = (double)(t_end - e.us) / 1000.0;
+        if (e.kind == 1 && e.a < 0x100u)
+            fprintf(stderr, "[lbp2-stall]   -%8.3f g%u %u -> %u\n", ms, e.a, e.b >> 16, e.b & 0xFFFF);
+        else if (e.kind == 1)
+            fprintf(stderr, "[lbp2-stall]   -%8.3f L%02X %u -> %u\n", ms, e.a & 0xFF, e.b >> 16, e.b & 0xFFFF);
+        else if (e.kind == 2)
+            fprintf(stderr, "[lbp2-stall]   -%8.3f ucmd %08X gate %s%s\n", ms, e.a,
+                    (e.b & 1) ? "armed" : "NOT armed", (e.b & 2) ? " (waited)" : "");
+        else if (e.kind == 3 || e.kind == 4)
+            fprintf(stderr, "[lbp2-stall]   -%8.3f arm %s g%u (gate %u) lr %08X\n", ms, e.kind == 3 ? "enter" : "done ",
+                    e.a & 0xFF, (e.a >> 8) & 0xFFFF, e.b);
+        else
+            fprintf(stderr, "[lbp2-stall]   -%8.3f release g%u flag %u list %u (gate %u) lr %08X\n", ms, e.a & 0xFF,
+                    (e.a >> 8) & 0xF, (e.a >> 12) & 0xFF, e.a >> 20, e.b);
+    }
+}
+
 static void* progress(void*) {
     static const uint32_t HEAD_SLOT = 0xC65AF0u - 0x74ECu;
     char last[128] = "";
@@ -446,8 +506,70 @@ extern "C" void __wrap_ppu_prof_stamp(void* vctx, unsigned lr) {
 
 static bool guest_ok(uint32_t a) { return a >= 0x10000u && a < 0xFFFF0000u; }
 
+extern "C" void cellSpurs_debug_dump(const char* tag) __attribute__((weak));
+
 static void stall_dump(unsigned t, const char* cur) {
     fprintf(stderr, "[lbp2-stall] t=%us stuck at %s: guest PPU threads\n", t, cur);
+    /* RSX side: control words at 0x20002000 (+0x40 = put/get/ref in the SDK layout) and the labels
+     * the SPU jobs release (0x44, the 0x4E-0x50 post-effect gates, 0x58 = MLAA frame counter). */
+    fprintf(stderr, "[lbp2-stall] ctrl +00 %08X %08X %08X  +40 %08X %08X %08X\n", be32(0x20002000u),
+            be32(0x20002004u), be32(0x20002008u), be32(0x20002040u), be32(0x20002044u), be32(0x20002048u));
+    fprintf(stderr, "[lbp2-stall] labels 41..44 %08X %08X %08X %08X  4E..50 %08X %08X %08X  58 %08X\n",
+            be32(0x20000410u), be32(0x20000420u), be32(0x20000430u), be32(0x20000440u),
+            be32(0x200004E0u), be32(0x200004F0u), be32(0x20000500u), be32(0x20000580u));
+    if (cellSpurs_debug_dump) cellSpurs_debug_dump("lbp2-stall");
+    ev_dump();
+    /* The Wws job list main drains at 0x5EBE84 (*(TOC2+0x2F9C) -> list object -> line, TOC2 = 0xC75A98): per row
+     * {hw0 publish, hw1 claim, hw2..hw7 per-SPU in flight}, headers {u16, u16 cmd, u32 arg} at
+     * *(line+0x30+4*row); cmd 2 = wait until the u16 at arg is 0 (dependency {u16 count, u8 wid,
+     * u8 ready}). Plus the dependency lines the PMs were found spinning on in two frozen runs. */
+    auto dump_list = [](const char* name, uint32_t obj, unsigned before, unsigned after) {
+        const uint32_t line = guest_ok(obj) && obj < 0x40000000u ? be32(obj) : 0;
+        if (!guest_ok(line) || line >= 0x40000000u) return;
+        fprintf(stderr, "[lbp2-stall] %s obj %08X (spurs %08X wid %u) line %08X: %08X %08X %08X %08X\n", name, obj,
+                be32(obj + 4), be32(obj + 8), line, be32(line), be32(line + 4), be32(line + 8), be32(line + 12));
+        for (uint32_t row = 0; row < 4; row++) {
+            const uint32_t r = line + 0x40 + 16 * row, hdr = be32(line + 0x30 + 4 * row);
+            uint16_t h[8];
+            for (int k = 0; k < 8; k++) h[k] = (uint16_t)(be32(r + 2 * (k & ~1)) >> ((k & 1) ? 0 : 16));
+            if (!guest_ok(hdr) || hdr >= 0x40000000u) continue;
+            fprintf(stderr, "[lbp2-stall]   row %u hdr %08X hw %04X %04X | %04X %04X %04X %04X %04X %04X\n",
+                    row, hdr, h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]);
+            unsigned lo = h[1] > before ? h[1] - before : 0u;
+            for (unsigned i = lo; i < h[1] + after && i < 0x400u; i++) {
+                const uint32_t w0 = be32(hdr + 8 * i), arg = be32(hdr + 8 * i + 4);
+                fprintf(stderr, "[lbp2-stall]     [%03X] %08X %08X", i, w0, arg);
+                if ((w0 & 0xFFFF) == 2 && guest_ok(arg) && arg < 0x40000000u) fprintf(stderr, " dep %08X", be32(arg & ~3u));
+                fputc('\n', stderr);
+            }
+        }
+    };
+    /* main's list (0x5EBE84: *(TOC2+0x2F9C) -> list object -> line, TOC2 = 0xC75A98), then every list in
+     * the wid table the gate release kicks (*(TOC2+0x2F58) -> u32 objects, 0x5EBC24) */
+    const uint32_t toc = 0xC75A98u;
+    dump_list("joblist main", be32(be32(toc + 0x2F9Cu) + 4), 3, 5);
+    { const uint32_t wt = be32(toc + 0x2F58u);
+      for (uint32_t i = 0; i < 16 && guest_ok(wt); i++) {
+          char nm[24]; snprintf(nm, sizeof nm, "joblist w%u", i);
+          dump_list(nm, be32(wt + 4 * i), 1, 3);
+      } }
+    /* the dependency structs at *(TOC2+0x2F98): {u32 n; entries {u16 count, u8 wid, u8 ready}}, stride 0x404 */
+    { const uint32_t db = be32(toc + 0x2F98u);
+      for (uint32_t g = 0; g < 8 && guest_ok(db); g++) {
+          const uint32_t sb = db + g * 0x404u, n = be32(sb);
+          fprintf(stderr, "[lbp2-stall] depstruct %u n %u:", g, n);
+          for (uint32_t k = 0; k < 8; k++) fprintf(stderr, " %08X", be32(sb + 4 + 4 * k));
+          fputc('\n', stderr);
+      } }
+    fprintf(stderr, "[lbp2-stall] pmdeps 160E5100: %08X %08X  160FD480: %08X %08X  160F5300: %08X %08X\n",
+            be32(0x160E5100u), be32(0x160E5104u), be32(0x160FD480u), be32(0x160FD484u),
+            be32(0x160F5300u), be32(0x160F5304u));
+    /* The two per-frame gates the GCM user handler releases (0x4000xxxx / 0xC000xxxx): structs at
+     * *(TOC2+0x2F98), stride 0x404, dependency word {u16 count, u8 wid, u8 ready} at +4. */
+    { const uint32_t gb = be32(0xC75A98u + 0x2F98u);
+      fprintf(stderr, "[lbp2-stall] gates base %08X: g0 %08X g1 %08X g2 %08X\n", gb,
+              guest_ok(gb) ? be32(gb + 4) : 0u, guest_ok(gb) ? be32(gb + 0x404 + 4) : 0u,
+              guest_ok(gb) ? be32(gb + 0x808 + 4) : 0u); }
     for (unsigned tid = 1; tid < 65; tid++) {
         ppu_context* c = g_stall_ctx[tid];
         if (!c) continue;
@@ -639,4 +761,133 @@ __attribute__((constructor)) static void lbp2_gcov_dump_start() {
     if (!e || !*e || !__gcov_dump) return;
     pthread_t th;
     if (pthread_create(&th, nullptr, gcov_dump_thread, (void*)(uintptr_t)atoi(e)) == 0) pthread_detach(th);
+}
+
+/* 13. LBP2_GATE_WAIT_MS=<n> (default 0 = off; opt-in): hold the RSX walker on a gate user command until
+ *     the main thread has armed that gate. Each frame main pushes the post-effect SPU jobs behind a
+ *     gate (0x5E8E88: push, then sth 1 at gate+4) and the GCM user handler releases it when the RSX
+ *     retires 0x4000xxxx (gate 1) / 0xC000xxxx (gate 2) (0x2B1CA8 -> 0x5EBBC8: sth 0, then the
+ *     workload's readyCount). Main arms only ~5-10 ms before the walker gets there (sometimes 1 ms):
+ *     when the walker wins, the release finds the gate still 0, main's arm closes it for good, the
+ *     jobs never run, and the RSX sits on their "done" label (0x43/0x44/0x4E-0x50) -- the 2 s
+ *     GCM_SEMA_ACQUIRE_MS give-up at best, a frozen game at worst (2026-11-22, notes/boot-progress.md).
+ *     Gates at *(TOC2+0x2F98), stride 0x404, u16 count at +4. After 3 timeouts in a row the wait
+ *     stays off until a gate is found armed again (a scene that does not arm them pays nothing).
+ *     It never fired in 8 runs and did not stop the freeze: the real cause is #15 (the arm itself
+ *     publishes its barrier before closing it). Kept opt-in for diagnosis. */
+extern "C" void (*g_gcm_user_cmd_retire_hook)(uint32_t cmd);
+static unsigned g_gate_wait_ms;
+static void gate_retire_hook(uint32_t cmd) {
+    if (cmd == 0xF5AAC0DEu || !(cmd & 0x40000000u)) { if (g_ev_on) ev_add(2, cmd, 1); return; }
+    static unsigned misses, waits, timeouts;
+    const uint32_t gb = be32(0xC75A98u + 0x2F98u);
+    if (!guest_ok(gb)) return;
+    const uint32_t ga = gb + (1u + (cmd >> 31)) * 0x404u + 4u;
+    auto armed = [ga] { return (vm_base[ga] | vm_base[ga + 1]) != 0; };
+    if (armed()) { misses = 0; if (g_ev_on) ev_add(2, cmd, 1); return; }
+    if (g_ev_on) ev_add(2, cmd, 0);
+    if (misses >= 3 || !g_gate_wait_ms) return;
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto lim = std::chrono::milliseconds(g_gate_wait_ms);
+    while (!armed() && std::chrono::steady_clock::now() - t0 < lim) usleep(50);
+    const long us = (long)std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - t0).count();
+    if (armed()) {
+        if (g_ev_on) ev_add(2, cmd, 3);
+        misses = 0; waits++;
+        if (waits <= 20 || (waits & 255) == 0)
+            fprintf(stderr, "[lbp2-gate] 0x%08X: walker ahead of main, waited %ld us for the arm (#%u)\n",
+                    cmd, us, waits);
+    } else {
+        misses++; timeouts++;
+        if (timeouts <= 20 || (timeouts & 255) == 0)
+            fprintf(stderr, "[lbp2-gate] 0x%08X: gate not armed after %u ms (timeout #%u%s)\n",
+                    cmd, g_gate_wait_ms, timeouts, misses >= 3 ? ", waits off until a gate is armed" : "");
+    }
+}
+__attribute__((constructor)) static void lbp2_gate_wait_start() {
+    const char* e = getenv("LBP2_GATE_WAIT_MS");
+    g_gate_wait_ms = e && *e ? (unsigned)atoi(e) : 0u;
+    const char* s = getenv("LBP2_FRAME_STALL_MS");   /* call-site records: a few atomics per event */
+    g_ev_on = s && atoi(s) > 0;
+    const char* r = getenv("LBP2_EVRING");           /* opt-in: its 100 us poll thread hides the freeze */
+    if (g_ev_on && r && *r == '1') { pthread_t th; if (pthread_create(&th, nullptr, ev_poll, nullptr) == 0) pthread_detach(th); }
+    if (g_gate_wait_ms || g_ev_on) g_gcm_user_cmd_retire_hook = gate_retire_hook;
+}
+
+/* 14. With the stall dump on: record each gate arm (0x5E8E88, g = high word of r4) and each gate
+ *     release that clears a gate (0x5EBBC8: r4 high word = g, its byte 5 = "clear the gate", r3 low
+ *     word = list index; the ~20 kick-only calls per frame, byte 5 = 0, are not recorded)
+ *     in the event ring, with the gate's u16 and the caller. Linked with --wrap for both (the calls
+ *     come through the 0x7Axxxx stubs in another translation unit). */
+static uint32_t gate_u16(uint32_t g) {
+    const uint32_t gb = be32(0xC75A98u + 0x2F98u);
+    if (!guest_ok(gb) || gb >= 0x40000000u || g > 8) return 0xFFFF;
+    const uint32_t ga = gb + g * 0x404u + 4u;
+    return (uint32_t)vm_base[ga] << 8 | vm_base[ga + 1];
+}
+/* 15. LBP2_ARM_ORDER (default 1; 0 = the game's own order): the gate arm, 0x5E8E88(r3, r4; g = high
+ *     word of r4), does   n = 0;  0x5E8E0C: entry[0] = {count 0, wid, ready 8};  0x5E7CCC: push a
+ *     "wait until entry[0] count == 0" header into the job list (publishing it) and n++;  then
+ *     sth 1 at entry[0].   Between the push and the sth the barrier is visible with its count at 0:
+ *     a policy module polling the list then passes it, and every job main pushes after it runs at
+ *     once, before main has written the counts of the dependencies those jobs decrement (0x5E7D6C:
+ *     count 1..5, then the matching wait header). Those decrements are lost, the counts never reach
+ *     0, the lists stop, and the RSX waits for the label their last job writes: the Avalon-transition
+ *     freeze (2026-11-22: entries left at 1 and 5 right after an arm, the jobs before the stuck
+ *     header all done). On the console the window is a few instructions; here the host can deschedule
+ *     the guest thread between the two stores while the PM threads poll at host speed. This runs the
+ *     same three steps with the count stored before the push. */
+void func_005E8E0C(ppu_context* ctx);
+void func_005E7CCC(ppu_context* ctx);
+extern "C" PPU_THREAD_LOCAL void (*g_trampoline_fn)(void*);
+extern "C" int  spu_coh_is_reserved(uint32_t addr);
+extern "C" void spu_lockline_lock(void);
+extern "C" void spu_lockline_unlock(void);
+extern "C" void spu_coh_notify_write(uint32_t addr);
+static void drain_trampoline(ppu_context* c) {
+    while (g_trampoline_fn) { void (*f)(void*) = g_trampoline_fn; g_trampoline_fn = nullptr; f(c); }
+}
+/* A PPU store an SPU reservation on the line must see (a PUTLLC compares the line under this lock). */
+static void coh_store_be(uint32_t a, uint32_t v, unsigned n) {
+    spu_lockline_lock();
+    for (unsigned i = 0; i < n; i++) vm_base[a + i] = (uint8_t)(v >> (8 * (n - 1 - i)));
+    if (spu_coh_is_reserved(a)) spu_coh_notify_write(a);
+    spu_lockline_unlock();
+}
+static int g_arm_order = -1;
+extern "C" void __real__Z13func_005E8E88P11ppu_context(ppu_context* c);
+extern "C" void __wrap__Z13func_005E8E88P11ppu_context(ppu_context* c) {
+    const uint32_t g = (uint32_t)(c->gpr[4] >> 32), lr = (uint32_t)c->lr;
+    if (g_arm_order < 0) {
+        const char* e = getenv("LBP2_ARM_ORDER");
+        g_arm_order = !(e && *e == '0');
+        fprintf(stderr, "[lbp2-local] LBP2_ARM_ORDER=%d: job-list gates %s\n", g_arm_order,
+                g_arm_order ? "closed before their barrier is published" : "armed in the game's order");
+    }
+    if (g_ev_on) ev_add(3, (g & 0xFF) | gate_u16(g) << 8, lr);
+    const uint32_t gb = be32(0xC75A98u + 0x2F98u);
+    if (!g_arm_order || g > 8 || !guest_ok(gb) || gb >= 0x40000000u) {
+        __real__Z13func_005E8E88P11ppu_context(c);
+    } else {
+        const uint64_t r3 = c->gpr[3], r4 = c->gpr[4];
+        const uint32_t sb = gb + g * 0x404u;
+        coh_store_be(sb, 0, 4);                                  /* n = 0 */
+        c->gpr[3] = r3; c->gpr[4] = r4; c->lr = 0x005E8EF0u;     /* entry[0] = {0, wid, 8} */
+        func_005E8E0C(c); drain_trampoline(c);
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        coh_store_be(sb + 4, 1, 2);                              /* closed ... */
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        c->gpr[3] = r3; c->gpr[4] = r4; c->lr = 0x005E8F10u;     /* ... before its wait header goes in */
+        func_005E7CCC(c); drain_trampoline(c);
+        c->lr = lr;
+    }
+    if (g_ev_on) ev_add(4, (g & 0xFF) | gate_u16(g) << 8, lr);
+}
+extern "C" void __real__Z13func_005EBBC8P11ppu_context(ppu_context* c);
+extern "C" void __wrap__Z13func_005EBBC8P11ppu_context(ppu_context* c) {
+    const uint32_t g = (uint32_t)(c->gpr[4] >> 32), flag = ((uint32_t)c->gpr[4] >> 16) & 0xFF;
+    const uint32_t li = (uint32_t)c->gpr[3], lr = (uint32_t)c->lr;
+    if (g_ev_on && flag) ev_add(5, (g & 0xFF) | 1u << 8 | (li & 0xFF) << 12 | (gate_u16(g) & 0xFFF) << 20, lr);
+    __real__Z13func_005EBBC8P11ppu_context(c);
 }

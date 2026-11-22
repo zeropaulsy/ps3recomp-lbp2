@@ -11,11 +11,11 @@ decrypt and lift it yourself.
 
 ## Status
 
-As of 2026-11-21:
+As of 2026-11-22:
 
 - **Boots reliably** through all 73 init steps (about 5 s), skips the intro movie, and reaches the
   opening credits level at about 40 s. The level can be walked through with scripted controller
-  input; the cutscene after it plays, and the next level (Avalon) loads.
+  input; the cutscene after it plays, and the next level (Avalon) loads (20 of 20 test runs).
 - **Renders correctly with the game's own shaders** (Vulkan build), in a window or headless.
 - **Speed:** the level runs at the game's own 30 fps cap. Without the cap it does about 39-41 fps
   standing and 36-38 fps walking. The in-engine cutscene after the credits course is the slow part
@@ -31,9 +31,6 @@ As of 2026-11-21:
   - A 7-pixel black band at the top and bottom of the frame (in the game's scene image; source
     unchecked). The larger black bars on all four sides (the image drawn at 0.877 of the frame)
     are fixed by `LBP2_SCREEN_SIZE`, see "Runtime settings".
-  - The transition into the second level (Avalon) froze once in five runs (the RSX gave up
-    waiting on a label the SPU jobs write, then the SPU job lanes were halted by the runtime's
-    repeat watchdog). Not reproduced since.
   - Online features are stubbed (offline only).
   - A hard reset of the PC while the game runs can damage its HDD cache
     (`hdd1/cache/BCUS98245/output/temp`); the game then exits with a libpng `incorrect data check` at
@@ -142,6 +139,7 @@ as `LBP2_RUNS_DIR=/dev/shm/lbp2-runs`.
 | `LBP2_FIFO_SPIN_MAX=4` | Caps the game's RSX-backlog spin, which otherwise freezes ~0.5 s when the RSX has caught up (most often with `LBP2_NO_MLAA=1`) |
 | `LBP2_RSX_POLL_US=250` | The RSX thread sleeps 250 us between FIFO passes instead of 4 ms (range 50..4000); ~+11% fps walking the level |
 | `SPU_FLOAT_RZ=1` | Runs SPU code with the host in round-toward-zero, flush-to-zero mode, so single-precision SPU float ops are one native op each (same bits as the exact forms; ~+16% fps in levels) |
+| `SPU_DMA_DEFER=1` | An SPU GET (main memory to local store) prefetches its source and is copied at the SPU's next channel operation (tag wait, PUT, any read, stop), so the cache misses of several GETs overlap instead of coming one after another. A program may only read a GET's destination after a tag wait, so it cannot tell. MAIN lane -2.5%, ~+1.4% fps in the credits level. `=0` copies at issue |
 | `SPU_INTERP_UNLIFTED=1` | Interprets SPU code loaded at run time that has no translation (the FMOD plugins have one, see "Building" step 5) |
 | `SPU_DMA_REPEAT_EXEMPT=8` | SPU image 8 waits on a control block between frames; the repeat watchdog must not halt it |
 | `SPU_WWS_PM_IMAGE=1` | The `Wws_Job` policy module is image 1 here, so job modules dispatch to lifted code |
@@ -159,12 +157,13 @@ Not set by `env.sh` (the defaults below are built in):
 |----------|-----|
 | `LBP2_SCREEN_SIZE=0.5` (default) | The game's Screen Size display option. The final image is scaled by 1.3^(size - 0.5), so 0.5 fills the frame exactly. The game starts new profiles at 0 (black bars on all four sides) and saves that, so this value replaces it at boot and when the saved profile is applied. The in-game slider still works until the next boot. `LBP2_SCREEN_SIZE=game` keeps the game's own value |
 | `LBP2_VBLANK_MS=16` (default) | Period of the emulated vblank in ms (project/main.cpp). The game flips every second vblank, so the frame cap is 1000 / (2 * period): 16 gives 31.25 fps, `16.667` gives 30.0 fps as on hardware (fractions are accepted). Smaller values are only for measuring headroom: game timing that counts vblanks runs fast |
+| `LBP2_ARM_ORDER=1` (default) | Each frame the game arms a gate in front of a batch of SPU jobs, but publishes the gate's barrier to the SPUs a few instructions before closing it. The emulated SPUs can slip through that gap, run jobs before their dependency counters are set, and leave the counters stuck: the game freezes or stalls 2 s (seen at the Avalon transition, about 1 run in 5). This closes the gate first. `0` keeps the game's own order |
 | `PS3RECOMP_VK_PRESENT=immediate` | Vulkan window only (`fifo`, `mailbox`, `immediate`, `relaxed`; default mailbox, else fifo). This NVIDIA/XWayland setup offers no mailbox, and under fifo a hidden window, locked screen or switched-off display holds each present ~1 s, so the game runs at ~1 fps. `immediate` never waits |
 
 Useful extras: `GCM_SEMA_STATS=1`, `VK_BLACK_STATS=1`, `RSX_PRESENT_LOG=1`, `LBP2_CRASH_BT=1`,
 `SPU_XR_FIX_STATS=10` (every 10 s, the SPU float ops that needed the exact slow path, by call site).
 For hunting stalls: `GCM_HITCH_MS=<n>` (frames slower than n ms), `SPU_TASK_SLOW_MS=<n>` (slow
-SPURS task rounds), `LBP2_FRAME_STALL_MS=<n>` (all guest threads when a frame stalls),
+SPURS task rounds), `LBP2_FRAME_STALL_MS=<n>` (all guest threads, RSX labels, SPURS lanes and the job list when a frame stalls),
 `SPU_INTERP_STATS=10` (what SPU code runs interpreted).
 
 ## Credits
