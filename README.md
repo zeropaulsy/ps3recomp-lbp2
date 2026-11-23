@@ -9,6 +9,9 @@ game's executable), the SPU images and job modules, the disc contents, keys and 
 excluded (`.gitignore` is a whitelist). You need your own copy of the game, and you have to
 decrypt and lift it yourself.
 
+> **AI disclaimer.** All aspects of this recompilaton are currently written by an AI coding
+> assistant (Claude). Builds are always manually playtested for bugs and crashes.
+
 ## Status
 
 As of 2026-11-22:
