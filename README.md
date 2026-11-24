@@ -119,7 +119,8 @@ BIN=$PWD/build-vk/lbp2_recomp ./run_frames.sh 200 vk frames-1 # Vulkan, a frame 
 ```
 
 Add `PS3RECOMP_VK_WINDOW=1` to the Vulkan build to watch it in a window (F11 for fullscreen,
-Esc quits). Controller input is scripted: `PAD_SCRIPT=<sec>:<buttons>,...` presses buttons and
+Esc or closing the window quits; so does `kill` (SIGTERM): the game is asked to exit and does so
+in about 2 s, a second SIGTERM ends it at once). Controller input is scripted: `PAD_SCRIPT=<sec>:<buttons>,...` presses buttons and
 `PAD_STICK` moves the left stick (format in the runtime's `libs/input/cellPad.c`).
 
 Progress shows in the log as `[lbp2-local] t=Ns flips=N` and `init at: step N`.
@@ -165,6 +166,8 @@ Not set by `env.sh` (the defaults below are built in):
 | `LBP2_VBLANK_THREAD=1` (default) | The vblank ticks come from a thread of their own, on an absolute clock. They used to come from the thread that also drains the command FIFO and presents, and fired up to 16 ms late behind that work. The game's vblank handler releases each flip every second vblank, so a late tick was a late frame (about 2 a second of 40-55 ms). `0` ticks from the frame loop as before |
 | `GCM_VBLANK_EACH=4` (default) | The game's vblank handler is called once per vblank (at most 4 owed calls at a time). Two ticks that arrived before the handler ran used to merge into one call, so the game's 2-vblank countdown lost a vblank (4% of them) and the frame took 50 ms. `0` merges them as before |
 | `PS3RECOMP_VK_PRESENT_THREAD=1` (default) | Vulkan window only: the window is drawn and presented on a thread of its own. The frame thread copies each finished frame into a staging image and moves on, so waiting for the display (vsync) never holds the game back. A frame that arrives while the previous one still waits replaces it. `0` presents on the frame thread as before |
+| `LBP2_SIGTERM_QUIT=1` (default) | SIGTERM quits like closing the window: the game gets the system's exit request and exits by itself in about 2 s (then, as on every exit, the RSX thread is stopped and the graphics backend shut down first). A second SIGTERM kills at once. `0` keeps SIGTERM's default (die at once) |
+| `LBP2_EXIT_RSX_MS=5000` (default) | On exit, how long to wait for the RSX thread to stop and shut the graphics backend down before `exit()`. Without that the GPU driver's library teardown ran under a thread still drawing and crashed it. If the thread does not stop in time the process ends with `_exit` (no teardown) |
 | `LBP2_ARM_ORDER=1` (default) | Each frame the game arms a gate in front of a batch of SPU jobs, but publishes the gate's barrier to the SPUs a few instructions before closing it. The emulated SPUs can slip through that gap, run jobs before their dependency counters are set, and leave the counters stuck: the game freezes or stalls 2 s (seen at the Avalon transition, about 1 run in 5). This closes the gate first. `0` keeps the game's own order |
 | `PS3RECOMP_VK_PRESENT=fifo` | Vulkan window only (`fifo`, `mailbox`, `immediate`, `relaxed`; default mailbox, else fifo, so fifo on this NVIDIA/XWayland setup). With the present thread (above), fifo (vsync, no tearing) no longer slows the game: a windowed walk holds 29.97 fps with every frame shown. Without the present thread, fifo cost the frame thread 12-15 ms a frame, and a hidden window, locked screen or switched-off display held each present ~1 s (the game ran at ~1 fps); `immediate` never waits but tears |
 

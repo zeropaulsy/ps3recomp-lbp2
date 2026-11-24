@@ -83,6 +83,8 @@ void     ps3_load_prx_modules(void);
 
 extern const char* ppu_vfs_root;              /* host dir the PS3 mount points map into */
 void     ps3_host_quit(const char* why);      /* cellSysutil.c: REQUEST_EXITGAME, then exit 0 */
+void     ps3_host_exit(int code, const char* why);   /* cellSysutil.c: g_ps3_pre_exit, then exit(code) */
+extern void (*g_ps3_pre_exit)(int code);
 
 /* sys_ppu_thread.c: the main thread's stack, as sys_ppu_thread_get_stack_information
  * reports it. Left at 0 it names VM_STACK_BASE, the first created thread's stack. */
@@ -127,33 +129,41 @@ unsigned cellGcm_flip_request_count(void);
 extern "C" int  rsx_d3d12_backend_init(uint32_t w, uint32_t h, const char* title);
 extern "C" void rsx_d3d12_backend_present(void);
 extern "C" int  rsx_d3d12_backend_pump_messages(void);
+extern "C" void rsx_d3d12_backend_shutdown(void);
 #  define rsx_backend_init    rsx_d3d12_backend_init
 #  define rsx_backend_present rsx_d3d12_backend_present
 #  define rsx_backend_pump    rsx_d3d12_backend_pump_messages
+#  define rsx_backend_shutdown rsx_d3d12_backend_shutdown
 #  define RSX_BACKEND_NAME    "D3D12"
 #elif defined(__APPLE__)
 extern "C" int  rsx_metal_backend_init(uint32_t w, uint32_t h, const char* title);
 extern "C" void rsx_metal_backend_present(void);
 extern "C" int  rsx_metal_backend_pump_messages(void);
+extern "C" void rsx_metal_backend_shutdown(void);
 #  define rsx_backend_init    rsx_metal_backend_init
 #  define rsx_backend_present rsx_metal_backend_present
 #  define rsx_backend_pump    rsx_metal_backend_pump_messages
+#  define rsx_backend_shutdown rsx_metal_backend_shutdown
 #  define RSX_BACKEND_NAME    "Metal"
 #elif defined(PS3RECOMP_RSX_VULKAN)
 extern "C" int  rsx_vulkan_backend_init(uint32_t w, uint32_t h, const char* title);
 extern "C" void rsx_vulkan_backend_present(void);
 extern "C" int  rsx_vulkan_backend_pump_messages(void);
+extern "C" void rsx_vulkan_backend_shutdown(void);
 #  define rsx_backend_init    rsx_vulkan_backend_init
 #  define rsx_backend_present rsx_vulkan_backend_present
 #  define rsx_backend_pump    rsx_vulkan_backend_pump_messages
+#  define rsx_backend_shutdown rsx_vulkan_backend_shutdown
 #  define RSX_BACKEND_NAME    "Vulkan"
 #else
 extern "C" int  rsx_null_backend_init(uint32_t w, uint32_t h, const char* title);
 extern "C" void rsx_null_backend_present(void);
 extern "C" int  rsx_null_backend_pump_messages(void);
+extern "C" void rsx_null_backend_shutdown(void);
 #  define rsx_backend_init    rsx_null_backend_init
 #  define rsx_backend_present rsx_null_backend_present
 #  define rsx_backend_pump    rsx_null_backend_pump_messages
+#  define rsx_backend_shutdown rsx_null_backend_shutdown
 #  define RSX_BACKEND_NAME    "null (headless software)"
 #endif
 
@@ -241,12 +251,63 @@ static void* vblank_thread(void*)
 }
 #endif
 
+/* Clean exit (local, 2026-11-24). Every way out of the process (the guest's
+ * sys_process_exit, the end of a host quit, the entry function returning)
+ * goes through ps3_host_exit, which calls lbp2_pre_exit before exit(). exit()
+ * runs the library destructors, the GPU driver's among them, and those unmap
+ * the driver's generated code: with this thread still drawing, it died inside
+ * vkCmdBindDescriptorSets (the 2026-11-20 "43 s crash" was a guest exit(1)).
+ * So the exiting thread asks this one to stop at the top of its loop, shut
+ * the backend down on the thread that uses it, and park. If it does not
+ * within LBP2_EXIT_RSX_MS (default 5000; it can be inside a bounded
+ * semaphore wait), the process ends with _exit: stdio flushed, no atexit
+ * handlers, no library teardown. */
+static volatile int g_rsx_stop, g_rsx_stopped;
+static thread_local int t_frame_clock;
+static int g_rsx_inited;
+
+static void lbp2_pre_exit(int code)
+{
+    if (t_frame_clock) {         /* a guest callback on this thread is exiting */
+        if (g_rsx_inited) { g_rsx_inited = 0; rsx_backend_shutdown(); }
+        return;
+    }
+    int limit = 5000;
+    { const char* e = getenv("LBP2_EXIT_RSX_MS"); if (e && *e) limit = atoi(e); }
+    __atomic_store_n(&g_rsx_stop, 1, __ATOMIC_RELEASE);
+    int ms = 0;
+    while (!__atomic_load_n(&g_rsx_stopped, __ATOMIC_ACQUIRE) && ms < limit) { Sleep(10); ms += 10; }
+    if (!__atomic_load_n(&g_rsx_stopped, __ATOMIC_ACQUIRE)) {
+        fprintf(stderr, "[exit] the RSX thread did not stop within %d ms: ending without library teardown\n", limit);
+        fflush(NULL);
+        _exit(code);
+    }
+    fprintf(stderr, "[exit] RSX thread stopped and the %s backend shut down (%d ms)\n", RSX_BACKEND_NAME, ms);
+}
+
+/* SIGTERM (pkill's default) quits the way the window's close button does:
+ * REQUEST_EXITGAME to the game, then ps3_host_exit after PS3_QUIT_GRACE_MS.
+ * The handler only sets a flag; the frame clock acts on it. A second SIGTERM
+ * kills at once. LBP2_SIGTERM_QUIT=0 leaves SIGTERM's default (die at once). */
+#ifndef _WIN32
+#include <signal.h>
+#include <unistd.h>
+static volatile sig_atomic_t g_sigterm;
+static void on_sigterm(int)
+{
+    if (g_sigterm) { signal(SIGTERM, SIG_DFL); raise(SIGTERM); return; }
+    g_sigterm = 1;
+}
+#endif
+
 static DWORD WINAPI frame_clock(LPVOID)
 {
+    t_frame_clock = 1;
     const char* title = getenv("PS3_TITLE");
     if (!title || !*title) title = "ps3recomp";
 
     int rsx_ok = (rsx_backend_init(WINDOW_WIDTH, WINDOW_HEIGHT, title) == 0);
+    g_rsx_inited = rsx_ok;
     fprintf(stderr, "[rsx] %s backend init %s\n", RSX_BACKEND_NAME,
             rsx_ok ? "OK -- window open" : "FAILED");
 
@@ -292,7 +353,13 @@ static DWORD WINAPI frame_clock(LPVOID)
 #else
         if (poll_us >= 1000 && poll_us % 1000 == 0) Sleep(poll_us / 1000);
         else { struct timespec d = { 0, (long)poll_us * 1000L }; nanosleep(&d, NULL); }
+        if (g_sigterm == 1) { g_sigterm = 2; ps3_host_quit("SIGTERM"); }
 #endif
+        if (__atomic_load_n(&g_rsx_stop, __ATOMIC_ACQUIRE)) {   /* lbp2_pre_exit: the process is exiting */
+            if (g_rsx_inited) { g_rsx_inited = 0; rsx_backend_shutdown(); }
+            __atomic_store_n(&g_rsx_stopped, 1, __ATOMIC_RELEASE);
+            for (;;) Sleep(1000);
+        }
         ULONGLONG now = GetTickCount64();
         ULONGLONG now_us = now * 1000ull;
 
@@ -600,6 +667,10 @@ int main(int argc, char** argv)
     /* Install the guest-callback hook, then start the frame clock. It no-ops
      * until the title registers its vblank and flip handlers during init. */
     g_ps3_guest_caller = harness_guest_caller;
+    g_ps3_pre_exit = lbp2_pre_exit;   /* local: stop the RSX thread before exit() (clean exit) */
+#ifndef _WIN32
+    { const char* e = getenv("LBP2_SIGTERM_QUIT"); if (!(e && *e == '0')) signal(SIGTERM, on_sigterm); }
+#endif
     CreateThread(NULL, 4u * 1024 * 1024, frame_clock, NULL, 0, NULL);
 
     printf("\n[boot] dispatching entry OPD 0x%08X (stack top 0x%08X)\n\n",
@@ -618,5 +689,7 @@ int main(int argc, char** argv)
      * instead, so hand back the status the guest published if it published
      * one. Returning a hardcoded 0 would report success for a run that never
      * got anywhere. */
-    return g_sys_process_exit_called ? (int)g_sys_process_exit_code : 0;
+    const int code = g_sys_process_exit_called ? (int)g_sys_process_exit_code : 0;
+    ps3_host_exit(code, "entry function returned");   /* local: through the pre-exit hook (clean exit) */
+    return code;
 }
