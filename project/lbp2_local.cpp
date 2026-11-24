@@ -447,11 +447,35 @@ extern "C" void __wrap__Z13func_005DCCC8P11ppu_context(ppu_context* c) {
     }
     __real__Z13func_005DCCC8P11ppu_context(c);
 }
+/* 16. LBP2_LETTERBOX=<0..0.18> (default 0; "game" keeps the game's own 0.01): the height of
+ *     the resting letterbox bars, as a fraction of the frame height, top and bottom each.
+ *     Every frame the game masks the scene with two black bars (pass 1 of the frame: a depth
+ *     write through fp b8bd57c4d2a384c8 at z = -1, so the scene fails the depth test there;
+ *     drawn by 0x2BDE8C via the rect helper 0x2BDD94). Bar height = H*(1-k)/2 + a*k*H with
+ *     k = 1 or the screen-size scale (1 at LBP2_SCREEN_SIZE=0.5), a = 0x2BD944 = base + scale * smoothstep(t): base 0.01 (0xC803C4) and
+ *     scale 0.17 (0xC803C8) are initialised data that nothing writes, t (0xCF8600) is the
+ *     cinematic transition (rests at ~0.01, so a = 0.01005). So outside cutscenes the game
+ *     always shows a 7.24-row black band at the top and bottom of 720 (cutscenes: 0.18 =
+ *     129.6 rows). It is the game's own design (a byte flag at *(0xD04430)+0x3BA turns the
+ *     bars off, but that is a special mode that skips the normal frame). This sets base = v
+ *     and scale = 0.18 - v, so cutscene bars keep their full height. */
+static float g_letterbox = 0.0f;
+static bool g_letterbox_on;
 static void video_out_configure(ppu_context* c) {
     ret(c, cellVideoOutConfigure((uint32_t)c->gpr[3], (void*)(uintptr_t)(uint32_t)c->gpr[4],
                                  (void*)(uintptr_t)(uint32_t)c->gpr[5], (uint32_t)c->gpr[6]));
     if ((uint32_t)c->lr != 0x005DFC10u) return;
     uint32_t bits;
+    if (g_letterbox_on) {
+        const float scale = 0.18f - g_letterbox;
+        memcpy(&bits, &g_letterbox, 4);
+        wr32(0xC803C4u, bits);
+        memcpy(&bits, &scale, 4);
+        wr32(0xC803C8u, bits);
+        fprintf(stderr, "[lbp2-local] LBP2_LETTERBOX: resting letterbox %.4f (cutscene %.2f) of the height\n",
+                (double)g_letterbox, 0.18);
+    }
+    if (!g_screen_size_on) return;
     memcpy(&bits, &g_screen_size, 4);
     wr32(0xD10D48u, bits);
     wr32(0xD10D4Cu, bits);
@@ -468,10 +492,20 @@ extern "C" void __wrap_ppu_sysprx_register(void) {
             if (!(g_screen_size >= 0.0f)) g_screen_size = 0.0f;   /* also NaN */
             if (g_screen_size > 1.0f) g_screen_size = 1.0f;
             g_screen_size_on = true;
-            ps3_hle_register_ctx(0x0BAE8772u, "cellVideoOutConfigure (lbp2: LBP2_SCREEN_SIZE)",
-                                 video_out_configure);
         }
     }
+    {
+        const char* e = getenv("LBP2_LETTERBOX");
+        if (!e || strcmp(e, "game")) {
+            if (e && *e) g_letterbox = strtof(e, nullptr);
+            if (!(g_letterbox >= 0.0f)) g_letterbox = 0.0f;   /* also NaN */
+            if (g_letterbox > 0.18f) g_letterbox = 0.18f;
+            g_letterbox_on = true;
+        }
+    }
+    if (g_screen_size_on || g_letterbox_on)
+        ps3_hle_register_ctx(0x0BAE8772u, "cellVideoOutConfigure (lbp2: LBP2_SCREEN_SIZE/LBP2_LETTERBOX)",
+                             video_out_configure);
     { const char* e = getenv("LBP2_SKIP_INTRO"); g_skip_intro = e && *e == '1'; }
     if (g_skip_intro)
         ps3_hle_register_ctx(0x8B72CDA1u, "cellPadGetData (lbp2: LBP2_SKIP_INTRO)", pad_get_data);

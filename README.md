@@ -32,9 +32,9 @@ As of 2026-11-22:
     Translated shaders are kept on disk (`cache/spirv`), so each happens once.
   - MLAA anti-aliasing is off by default for speed (`LBP2_NO_MLAA=1`), which also removes the
     glow halo.
-  - A 7-pixel black band at the top and bottom of the frame (in the game's scene image; source
-    unchecked). The larger black bars on all four sides (the image drawn at 0.877 of the frame)
-    are fixed by `LBP2_SCREEN_SIZE`, see "Runtime settings".
+  - The black bars on all four sides (the image drawn at 0.877 of the frame) and the 7-pixel
+    black band at the top and bottom (the game's own resting letterbox) are removed by
+    `LBP2_SCREEN_SIZE` and `LBP2_LETTERBOX`, see "Runtime settings".
   - Online features are stubbed (offline only).
   - A hard reset of the PC while the game runs can damage its HDD cache
     (`hdd1/cache/BCUS98245/output/temp`); the game then exits with a libpng `incorrect data check` at
@@ -47,7 +47,7 @@ As of 2026-11-22:
 
 | Path | What |
 |------|------|
-| `project/` | The game project: `CMakeLists.txt`, `main.cpp`, `stubs.cpp`, and `lbp2_local.cpp` (game-specific shims: offline `cellNetCtlGetState`, a UDP loopback for the game's party code, intro skip, MLAA skip, the Screen Size option (`LBP2_SCREEN_SIZE`), registration of the FMOD plugins as relocatable SPU code, init-step logging and stall dumps, `LBP2_NO_RASTER`, `LBP2_CRASH_BT`) |
+| `project/` | The game project: `CMakeLists.txt`, `main.cpp`, `stubs.cpp`, and `lbp2_local.cpp` (game-specific shims: offline `cellNetCtlGetState`, a UDP loopback for the game's party code, intro skip, MLAA skip, the Screen Size option (`LBP2_SCREEN_SIZE`), the resting letterbox (`LBP2_LETTERBOX`), registration of the FMOD plugins as relocatable SPU code, init-step logging and stall dumps, `LBP2_NO_RASTER`, `LBP2_CRASH_BT`) |
 | `env.sh` | Workspace paths and the runtime settings LBP2 needs; sourced by the scripts |
 | `run.sh` | Silent launcher: `./run.sh <seconds> [label]`, log in `runs/` (or in `$LBP2_RUNS_DIR`) |
 | `run_frames.sh` | Same, saving a Vulkan frame every 5 s: `./run_frames.sh <seconds> <label> <new-dir>` |
@@ -162,6 +162,7 @@ Not set by `env.sh` (the defaults below are built in):
 | Variable | Why |
 |----------|-----|
 | `LBP2_SCREEN_SIZE=0.5` (default) | The game's Screen Size display option. The final image is scaled by 1.3^(size - 0.5), so 0.5 fills the frame exactly. The game starts new profiles at 0 (black bars on all four sides) and saves that, so this value replaces it at boot and when the saved profile is applied. The in-game slider still works until the next boot. `LBP2_SCREEN_SIZE=game` keeps the game's own value |
+| `LBP2_LETTERBOX=0` (default) | Height of the game's resting letterbox bars, as a fraction of the frame height (top and bottom each). The game always masks 1% (0.01, about 7 rows of 720) at the top and bottom outside cutscenes, and animates the bars to 18% in cutscenes. This sets the resting value and keeps the cutscene height. `LBP2_LETTERBOX=game` keeps the game's 0.01 |
 | `LBP2_VBLANK_MS=16.683` (default) | Period of the emulated vblank in ms (project/main.cpp). The game flips every second vblank, so the frame cap is 1000 / (2 * period): the default (59.94 Hz, the PS3's 720p rate) gives 29.97 fps. Fractions are accepted. The old default, 16 (31.25 fps), could not line up with a ~60 Hz monitor, so about one frame a second was skipped or shown twice in the window. Smaller values are only for measuring headroom: game timing that counts vblanks runs fast |
 | `LBP2_VBLANK_THREAD=1` (default) | The vblank ticks come from a thread of their own, on an absolute clock. They used to come from the thread that also drains the command FIFO and presents, and fired up to 16 ms late behind that work. The game's vblank handler releases each flip every second vblank, so a late tick was a late frame (about 2 a second of 40-55 ms). `0` ticks from the frame loop as before |
 | `GCM_VBLANK_EACH=4` (default) | The game's vblank handler is called once per vblank (at most 4 owed calls at a time). Two ticks that arrived before the handler ran used to merge into one call, so the game's 2-vblank countdown lost a vblank (4% of them) and the frame took 50 ms. `0` merges them as before |
