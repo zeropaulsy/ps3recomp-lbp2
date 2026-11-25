@@ -25,8 +25,9 @@ As of 2026-11-22:
   standing and 36-38 fps walking. The in-engine cutscene after the credits course is the slow part
   (20-23 fps). The limit is the game's SPU job code (translated to native code, but the job lane
   the main thread waits on needs about 16 ms per frame while walking and 35 ms in that cutscene).
-- **Audio works internally:** the FMOD mixer and all its codec/effect plugins run as translated code
-  and keep up in real time. These scripts never play it (see "Running").
+- **Audio works:** the FMOD mixer and all its codec/effect plugins run as translated code and keep
+  up in real time. The scripts are silent by default; `LBP2_SOUND=1 ./run.sh ...` plays the sound
+  (in sync with the picture, see "Running").
 - **Known problems:**
   - The first time a new material appears, translating its shaders holds the frame for 20-90 ms.
     Translated shaders are kept on disk (`cache/spirv`), so each happens once.
@@ -49,7 +50,7 @@ As of 2026-11-22:
 |------|------|
 | `project/` | The game project: `CMakeLists.txt`, `main.cpp`, `stubs.cpp`, and `lbp2_local.cpp` (game-specific shims: offline `cellNetCtlGetState`, a UDP loopback for the game's party code, intro skip, MLAA skip, the Screen Size option (`LBP2_SCREEN_SIZE`), the resting letterbox (`LBP2_LETTERBOX`), registration of the FMOD plugins as relocatable SPU code, init-step logging and stall dumps, `LBP2_NO_RASTER`, `LBP2_CRASH_BT`) |
 | `env.sh` | Workspace paths and the runtime settings LBP2 needs; sourced by the scripts |
-| `run.sh` | Silent launcher: `./run.sh <seconds> [label]`, log in `runs/` (or in `$LBP2_RUNS_DIR`) |
+| `run.sh` | Launcher, silent unless `LBP2_SOUND=1`: `./run.sh <seconds> [label]`, log in `runs/` (or in `$LBP2_RUNS_DIR`) |
 | `run_frames.sh` | Same, saving a Vulkan frame every 5 s: `./run_frames.sh <seconds> <label> <new-dir>` |
 | `patch_stubs.py` | Post-lift fix for import stubs (see below) |
 | `gdb/` | `run_gdb.sh <seconds> <absolute script> <label>` and the probe scripts used during bring-up |
@@ -109,18 +110,38 @@ As of 2026-11-22:
 
 ## Running
 
-Always through `run.sh` or `gdb/run_gdb.sh`. Both force SDL's dummy audio driver, make the
-PulseAudio/PipeWire/JACK servers unreachable, and kill the game if it opens an audio device.
-Any new launcher should do the same.
+Always through `run.sh` or `gdb/run_gdb.sh`. By default both are silent: they force SDL's dummy
+audio driver, make the PulseAudio/PipeWire/JACK servers unreachable, and kill the game if it opens
+an audio device. Any new launcher should do the same. `LBP2_SOUND=1` (run.sh only) plays the sound
+through the desktop's sound server instead.
 
 ```
 ./run.sh 200 test                                            # headless, 200 s
 BIN=$PWD/build-vk/lbp2_recomp ./run_frames.sh 200 vk frames-1 # Vulkan, a frame every 5 s
+LBP2_SOUND=1 PS3RECOMP_VK_WINDOW=1 BIN=$PWD/build-vk/lbp2_recomp ./run.sh 3600 play  # play: window + sound
 ```
 
 Add `PS3RECOMP_VK_WINDOW=1` to the Vulkan build to watch it in a window (F11 for fullscreen,
-Esc or closing the window quits; so does `kill` (SIGTERM): the game is asked to exit and does so
-in about 2 s, a second SIGTERM ends it at once). Controller input is scripted: `PAD_SCRIPT=<sec>:<buttons>,...` presses buttons and
+closing the window quits; so does `kill` (SIGTERM): the game is asked to exit and does so
+in about 2 s, a second SIGTERM ends it at once).
+
+Input: a controller SDL2 recognises (DualShock, DualSense, Xbox, ...) is picked up at start and when
+plugged in later. Without one, the keyboard plays port 0 while the game window has the focus
+(`PAD_KEYBOARD=full`, set by `env.sh`):
+
+| Pad | Key | Pad | Key |
+|-----|-----|-----|-----|
+| Left stick | W A S D | Right stick | I J K L |
+| D-pad | arrow keys | Cross | Space |
+| Circle | E or Esc | Square | Q |
+| Triangle | R | L1 / R1 | Left Ctrl / Left Shift |
+| L2 / R2 | Z / C | L3 / R3 | F / H |
+| START | Enter | SELECT | Tab |
+
+Close the window to quit (Esc is circle, "back", here: `env.sh` sets `PS3RECOMP_ESC_QUIT=0`).
+F11 or Alt+Enter toggles fullscreen (Enter with Alt is not START). `env.sh` also presses
+buttons by itself early on (`PAD_SCRIPT`, `LBP2_SKIP_INTRO`, see below); set `LBP2_SKIP_INTRO=0`
+to play the intro yourself. For scripted runs, `PAD_SCRIPT=<sec>:<buttons>,...` presses buttons and
 `PAD_STICK` moves the left stick (format in the runtime's `libs/input/cellPad.c`).
 
 Progress shows in the log as `[lbp2-local] t=Ns flips=N` and `init at: step N`.
@@ -138,6 +159,8 @@ as `LBP2_RUNS_DIR=/dev/shm/lbp2-runs`.
 | Variable | Why |
 |----------|-----|
 | `PAD_SCRIPT=25:0x4000,30:0x4000,35:0x4000` | Presses Cross for the game's two boot prompts |
+| `PS3RECOMP_ESC_QUIT=0` | Esc does not close the window (it is circle in the keyboard layout); close the window to quit |
+| `PAD_KEYBOARD=full` | The keyboard layout above (the runtime's own default puts the d-pad and left stick on the same arrows, which in LBP2 fires the emotes while walking). Only with no controller on port 0 and the window focused |
 | `LBP2_SKIP_INTRO=1` | Pulses START from 38 s until the level starts, which skips the intro movie (never pauses the level) |
 | `LBP2_NO_MLAA=1` | Skips the Edge MLAA SPU pass: ~+20% fps, but no anti-aliasing and no glow halo. `LBP2_NO_MLAA=0` turns MLAA back on |
 | `LBP2_NO_RASTER=1` | Headless build only: skips the null backend's CPU rasterizer, whose output nobody sees (much faster). `LBP2_NO_RASTER=0` keeps it |

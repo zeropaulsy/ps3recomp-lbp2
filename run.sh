@@ -5,10 +5,17 @@
 # LBP2_RUNS_DIR=<dir>: write the log there instead of runs/ (e.g. /dev/shm: the game then writes nothing
 # to the nearly-full ntfs-3g volume while it runs; the game's cwd stays runs/).
 SECS=${1:-120}; LABEL=${2:-run}; LOG=${LBP2_RUNS_DIR:-$W/runs}/$(date +%H%M%S)-$LABEL.log
-# Audio: SDL's dummy driver, and every real sound server made unreachable.
-export SDL_AUDIODRIVER=dummy
-export PULSE_SERVER=unix:/nonexistent/pulse PIPEWIRE_REMOTE=/nonexistent/pipewire ALSA_CONFIG_PATH=/dev/null JACK_NO_START_SERVER=1
-export XDG_RUNTIME_DIR=$W/empty-xdg
+# Audio: silent by default -- SDL's dummy driver, and every real sound server made unreachable.
+# LBP2_SOUND=1 (only when the user asks for sound in person; never for test runs) plays through the
+# desktop's sound server instead and turns the audio-device guard below off.
+if [ "$LBP2_SOUND" = 1 ]; then
+  echo "run.sh: LBP2_SOUND=1: sound ON" >&2
+else
+  LBP2_SOUND=0
+  export SDL_AUDIODRIVER=dummy
+  export PULSE_SERVER=unix:/nonexistent/pulse PIPEWIRE_REMOTE=/nonexistent/pipewire ALSA_CONFIG_PATH=/dev/null JACK_NO_START_SERVER=1
+  export XDG_RUNTIME_DIR=$W/empty-xdg
+fi
 export PS3_VFS_ROOT=$W/game PS3_HDD0_ROOT=$W/hdd0 PS3_HDD1_ROOT=$W/hdd1 PS3_DEV_FLASH=$W/dev_flash
 export PS3_TITLE=lbp2-recomp
 mkdir -p "$W/runs" "${LBP2_RUNS_DIR:-$W/runs}" "$W/empty-xdg"; cd "$W/runs" || exit 1
@@ -16,8 +23,8 @@ mkdir -p "$W/runs" "${LBP2_RUNS_DIR:-$W/runs}" "$W/empty-xdg"; cd "$W/runs" || e
 PID=$!
 START=$SECONDS; MAXRSS=0; WHY=timeout
 while kill -0 $PID 2>/dev/null; do
-  if ls -l /proc/$PID/fd 2>/dev/null | grep -q '/dev/snd'; then WHY=AUDIO_DEVICE_OPENED; kill -9 $PID; break; fi
-  if ss -xpn 2>/dev/null | grep "pid=$PID," | grep -qE 'pulse/native|pipewire-0'; then WHY=AUDIO_SERVER_CONNECTED; kill -9 $PID; break; fi
+  if [ "$LBP2_SOUND" = 0 ] && ls -l /proc/$PID/fd 2>/dev/null | grep -q '/dev/snd'; then WHY=AUDIO_DEVICE_OPENED; kill -9 $PID; break; fi
+  if [ "$LBP2_SOUND" = 0 ] && ss -xpn 2>/dev/null | grep "pid=$PID," | grep -qE 'pulse/native|pipewire-0'; then WHY=AUDIO_SERVER_CONNECTED; kill -9 $PID; break; fi
   RSS=$(awk '/VmRSS/{print $2}' /proc/$PID/status 2>/dev/null); RSS=${RSS:-0}; [ "$RSS" -gt "$MAXRSS" ] && MAXRSS=$RSS
   if [ "$RSS" -gt 9000000 ]; then WHY=RSS_LIMIT; kill -9 $PID; break; fi
   if [ $((SECONDS-START)) -ge "$SECS" ]; then kill -9 $PID; break; fi
