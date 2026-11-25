@@ -16,7 +16,7 @@ else
   export PULSE_SERVER=unix:/nonexistent/pulse PIPEWIRE_REMOTE=/nonexistent/pipewire ALSA_CONFIG_PATH=/dev/null JACK_NO_START_SERVER=1
   export XDG_RUNTIME_DIR=$W/empty-xdg
 fi
-export PS3_VFS_ROOT=$W/game PS3_HDD0_ROOT=$W/hdd0 PS3_HDD1_ROOT=$W/hdd1 PS3_DEV_FLASH=$W/dev_flash
+export PS3_VFS_ROOT=$W/game PS3_HDD0_ROOT=${LBP2_HDD0:-$W/hdd0} PS3_HDD1_ROOT=$W/hdd1 PS3_DEV_FLASH=$W/dev_flash
 export PS3_TITLE=lbp2-recomp
 mkdir -p "$W/runs" "${LBP2_RUNS_DIR:-$W/runs}" "$W/empty-xdg"; cd "$W/runs" || exit 1
 "${BIN:-$W/build/lbp2_recomp}" "$LBP2_ELF" > "$LOG" 2>&1 &
