@@ -20,14 +20,14 @@ def guest_frames(n=10):
 counts = {}
 class WP(gdb.Breakpoint):
     def stop(self):
-        v = struct.unpack('>f', inf.read_memory(self.addr, 4).tobytes())[0]
+        v = struct.unpack('>f', inf.read_memory(self.addr, 4).tobytes())[0]; hx = inf.read_memory(self.addr, 4).tobytes().hex()
         th = gdb.selected_thread()
         g = guest_frames()
         k = (self.ga, g)
         counts[k] = counts.get(k, 0) + 1
         if counts[k] <= MAX:
-            print('[vw] t=%.1f 0x%08X = %g by %s | guest %s | host pc 0x%x %s' % (
-                time.time() - T0, self.ga, v, th.name, g, gdb.newest_frame().pc(), gdb.newest_frame().name()), flush=True)
+            print('[vw] t=%.1f 0x%08X = %g (%s) by %s | guest %s | host pc 0x%x %s' % (
+                time.time() - T0, self.ga, v, hx, th.name, g, gdb.newest_frame().pc(), gdb.newest_frame().name()), flush=True)
         return False
 armed = []
 class Arm(gdb.Breakpoint):
